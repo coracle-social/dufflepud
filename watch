@@ -1,0 +1,3 @@
+#!/bin/bash
+
+find dufflepud -type f | entr -r ./start
