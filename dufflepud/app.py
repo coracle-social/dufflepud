@@ -12,10 +12,26 @@ cors = CORS(app, resource={
     }
 })
 
+
+@app.route('/relay/info', methods=['POST'])
+def relay_info():
+    if not request.json.get('url'):
+        return {'code': 'invalid-url'}
+
+    return _get_relay_info(request.json['url'])
+
+
 @app.route('/link/preview', methods=['POST'])
 def link_preview():
     if not request.json.get('url'):
         return {'code': 'invalid-url'}
+
+    url = request.json['url']
+
+    content_type = requests.head(url).headers.get('Content-Type')
+
+    if content_type in {'image/jpeg', 'image/jpg', 'image/png'}:
+        return {'title': "", 'description': "", 'image': url, 'url': url}
 
     return _get_link_preview(request.json['url'])
 
@@ -28,3 +44,15 @@ def _get_link_preview(url):
     })
 
     return res.json()
+
+
+@functools.lru_cache(maxsize=1000)
+def _get_relay_info(url):
+    res = requests.post(url.replace('wss://', 'https://'), headers={
+        'Accept': 'application/nostr_json',
+    })
+
+    try:
+        return res.json()
+    except requests.exceptions.JSONDecodeError:
+        return {}
