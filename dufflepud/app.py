@@ -13,6 +13,11 @@ cors = CORS(app, resource={
 })
 
 
+@app.route('/relay', methods=['GET'])
+def relay_list():
+    return _get_relays()
+
+
 @app.route('/relay/info', methods=['POST'])
 def relay_info():
     if not request.json.get('url'):
@@ -36,14 +41,9 @@ def link_preview():
     return _get_link_preview(request.json['url'])
 
 
-@functools.lru_cache(maxsize=1000)
-def _get_link_preview(url):
-    res = requests.post('https://api.linkpreview.net', params={
-        'key': env('LINKPREVIEW_API_KEY'),
-        'q': url,
-    })
-
-    return res.json()
+@functools.lru_cache()
+def _get_relays():
+    return requests.get('https://nostr.watch/relays.json').json()
 
 
 @functools.lru_cache(maxsize=1000)
@@ -56,3 +56,14 @@ def _get_relay_info(url):
         return res.json()
     except requests.exceptions.JSONDecodeError:
         return {}
+
+
+@functools.lru_cache(maxsize=1000)
+def _get_link_preview(url):
+    res = requests.post('https://api.linkpreview.net', params={
+        'key': env('LINKPREVIEW_API_KEY'),
+        'q': url,
+    })
+
+    return res.json()
+
