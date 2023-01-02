@@ -35,7 +35,7 @@ def link_preview():
 
     content_type = requests.head(url).headers.get('Content-Type')
 
-    if content_type in {'image/jpeg', 'image/jpg', 'image/png'}:
+    if content_type.startswith('image/'):
         return {'title': "", 'description': "", 'image': url, 'url': url}
 
     return _get_link_preview(request.json['url'])
