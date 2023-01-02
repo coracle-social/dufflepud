@@ -70,6 +70,28 @@ def link_preview():
 # Utils
 
 
+@app.route('/image/quote', methods=['POST'])
+def image_quote():
+    {
+        'size': 129837,
+        'backends': ['s3', 'azure'],
+        'expires': 1293768,
+    }
+
+    {
+        'id': 129387,
+        'invoice': 'asdf987asd9f87',
+        'terms': (
+            "You certify that your content is free of pornography, or illegal content. "
+            "Content may be deleted at the discretion of the host."
+        ),
+    }
+    if not request.json.get('url'):
+        return {'code': 'invalid-url'}
+
+    return _get_link_preview(request.json['url'])
+
+
 @functools.lru_cache()
 def _get_relays():
     return requests.get('https://nostr.watch/relays.json').json()
