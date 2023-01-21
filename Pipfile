@@ -10,6 +10,7 @@ gunicorn = "*"
 flask-cors = "*"
 toml = "*"
 requests = "*"
+psycopg2 = "*"
 
 [dev-packages]
 

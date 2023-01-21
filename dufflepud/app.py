@@ -1,7 +1,10 @@
 import requests, functools
+from base64 import b64decode
 from raddoo import env
 from flask import Flask, request, g
 from flask_cors import CORS
+from dufflepud.util import now
+from dufflepud.db import model
 
 
 app = Flask(__name__)
@@ -11,6 +14,20 @@ cors = CORS(app, resource={
         "origins":"*"
     }
 })
+
+
+@app.route('/usage/<session>/<name>', methods=['POST'])
+def usage_post(session, name):
+    name = b64decode(name).decode('utf-8')
+
+    with model.db.transaction():
+        model.insert('usage', {
+            'name': name,
+            'session': session,
+            'created_at': now(),
+        })
+
+    return {}
 
 
 @app.route('/relay', methods=['GET'])
