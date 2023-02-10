@@ -1,6 +1,6 @@
 import requests, functools, re
 from requests.exceptions import (
-    ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema)
+    ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema)
 from base64 import b64decode
 from raddoo import env
 from flask import Flask, request, g
@@ -75,7 +75,7 @@ def _get_relay_info(ws_url):
 
     try:
         res = requests.post(http_url, headers=headers, timeout=1)
-    except (ConnectionError, ReadTimeout, InvalidSchema) as exc:
+    except (ConnectionError, ReadTimeout, InvalidSchema, MissingSchema) as exc:
         return {}
 
     try:
@@ -86,10 +86,16 @@ def _get_relay_info(ws_url):
 
 @functools.lru_cache(maxsize=1000)
 def _get_link_preview(url):
-    res = requests.post('https://api.linkpreview.net', params={
-        'key': env('LINKPREVIEW_API_KEY'),
-        'q': url,
-    })
+    try:
+        res = requests.post('https://api.linkpreview.net', params={
+            'key': env('LINKPREVIEW_API_KEY'),
+            'q': url,
+        })
+    except (ConnectionError, ReadTimeout, InvalidSchema, MissingSchema) as exc:
+        return {}
 
-    return res.json()
+    try:
+        return res.json()
+    except JSONDecodeError as exc:
+        return {}
 
