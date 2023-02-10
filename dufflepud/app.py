@@ -1,4 +1,6 @@
-import requests, functools
+import requests, functools, re
+from requests.exceptions import (
+    ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema)
 from base64 import b64decode
 from raddoo import env
 from flask import Flask, request, g
@@ -50,12 +52,15 @@ def link_preview():
 
     url = request.json['url']
 
-    content_type = requests.head(url).headers.get('Content-Type')
+    content_type = requests.head(url).headers.get('Content-Type', '')
 
     if content_type.startswith('image/'):
         return {'title': "", 'description': "", 'image': url, 'url': url}
 
     return _get_link_preview(request.json['url'])
+
+
+# Utils
 
 
 @functools.lru_cache()
@@ -64,14 +69,18 @@ def _get_relays():
 
 
 @functools.lru_cache(maxsize=1000)
-def _get_relay_info(url):
-    res = requests.post(url.replace('wss://', 'https://'), headers={
-        'Accept': 'application/nostr_json',
-    })
+def _get_relay_info(ws_url):
+    http_url = re.sub(r'ws(s?)://', r'http\1://', ws_url)
+    headers = {'Accept': 'application/nostr+json'}
+
+    try:
+        res = requests.post(http_url, headers=headers, timeout=1)
+    except (ConnectionError, ReadTimeout, InvalidSchema) as exc:
+        return {}
 
     try:
         return res.json()
-    except requests.exceptions.JSONDecodeError:
+    except JSONDecodeError as exc:
         return {}
 
 
