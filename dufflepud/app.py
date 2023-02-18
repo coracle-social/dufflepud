@@ -1,8 +1,8 @@
-import requests, functools, re
+import requests, functools, re, logging, json
 from requests.exceptions import (
     ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema)
 from base64 import b64decode
-from raddoo import env
+from raddoo import env, slurp
 from flask import Flask, request, g
 from flask_cors import CORS
 from dufflepud.util import now
@@ -10,6 +10,8 @@ from dufflepud.db import model
 
 
 app = Flask(__name__)
+
+logger = logging.getLogger(__name__)
 
 cors = CORS(app, resource={
     r"/*":{
@@ -34,7 +36,12 @@ def usage_post(session, name):
 
 @app.route('/relay', methods=['GET'])
 def relay_list():
-    return _get_relays()
+    try:
+        return _get_relays()
+    except Exception as exc:
+        logger.exception(exc)
+
+        return json.loads(slurp('relays.json'))
 
 
 @app.route('/relay/info', methods=['POST'])
@@ -52,7 +59,10 @@ def link_preview():
 
     url = request.json['url']
 
-    content_type = requests.head(url).headers.get('Content-Type', '')
+    try:
+        content_type = requests.head(url).headers.get('Content-Type', '')
+    except (ConnectionError, ReadTimeout, InvalidSchema, MissingSchema) as exc:
+        content_type = ''
 
     if content_type.startswith('image/'):
         return {'title': "", 'description': "", 'image': url, 'url': url}
