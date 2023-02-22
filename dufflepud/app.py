@@ -1,6 +1,7 @@
 import requests, functools, re, logging, json
 from requests.exceptions import (
-    ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema)
+    ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema,
+    InvalidURL, TooManyRedirects)
 from base64 import b64decode
 from raddoo import env, slurp
 from flask import Flask, request, g
@@ -49,7 +50,7 @@ def relay_info():
     if not request.json.get('url'):
         return {'code': 'invalid-url'}
 
-    return _get_relay_info(request.json['url'])
+    return _get_relay_info(request.json['url']) or {}
 
 
 @app.route('/link/preview', methods=['POST'])
@@ -58,16 +59,12 @@ def link_preview():
         return {'code': 'invalid-url'}
 
     url = request.json['url']
+    res = _req('head', url)
 
-    try:
-        content_type = requests.head(url).headers.get('Content-Type', '')
-    except (ConnectionError, ReadTimeout, InvalidSchema, MissingSchema) as exc:
-        content_type = ''
-
-    if content_type.startswith('image/'):
+    if (res.headers.get('Content-Type', '') if res else '').startswith('image/'):
         return {'title': "", 'description': "", 'image': url, 'url': url}
 
-    return _get_link_preview(request.json['url'])
+    return _get_link_preview(url) or {}
 
 
 # Utils
@@ -83,29 +80,32 @@ def _get_relay_info(ws_url):
     http_url = re.sub(r'ws(s?)://', r'http\1://', ws_url)
     headers = {'Accept': 'application/nostr+json'}
 
-    try:
-        res = requests.post(http_url, headers=headers, timeout=1)
-    except (ConnectionError, ReadTimeout, InvalidSchema, MissingSchema) as exc:
-        return {}
-
-    try:
-        return res.json()
-    except JSONDecodeError as exc:
-        return {}
+    return _req_json('post', http_url, headers=headers, timeout=1)
 
 
 @functools.lru_cache(maxsize=1000)
 def _get_link_preview(url):
+    return _req_json('post', 'https://api.linkpreview.net', params={
+        'key': env('LINKPREVIEW_API_KEY'),
+        'q': url,
+    })
+
+
+def _req(*args, **kwargs):
     try:
-        res = requests.post('https://api.linkpreview.net', params={
-            'key': env('LINKPREVIEW_API_KEY'),
-            'q': url,
-        })
-    except (ConnectionError, ReadTimeout, InvalidSchema, MissingSchema) as exc:
-        return {}
+        return requests.request(*args, **kwargs)
+    except (ConnectionError, ReadTimeout, InvalidSchema, InvalidURL, MissingSchema,
+            TooManyRedirects) as exc:
+        return None
+
+
+def _req_json(*args, **kwargs):
+    res = _req(*args, **kwargs)
+
+    if not res:
+        return None
 
     try:
         return res.json()
     except JSONDecodeError as exc:
-        return {}
-
+        return None
