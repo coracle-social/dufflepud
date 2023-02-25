@@ -79,19 +79,25 @@ def transaction():
     if cursor:
         raise Exception("Already in transaction")
 
-    with connection.cursor() as cur:
-        cursor = cur
+    try:
+        with connection.cursor() as cur:
+            cursor = cur
 
-        try:
+            try:
+                yield
+            except Exception:
+                connection.rollback()
+
+                raise
+            else:
+                connection.commit()
+            finally:
+                cursor = None
+    except InterfaceError as exc:
+        reconnect()
+
+        with transaction():
             yield
-        except Exception:
-            connection.rollback()
-
-            raise
-        else:
-            connection.commit()
-        finally:
-            cursor = None
 
 
 def mogrify(query):
