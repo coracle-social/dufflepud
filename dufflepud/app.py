@@ -165,7 +165,7 @@ def _get_relays():
     return requests.get('https://nostr.watch/relays.json').json()
 
 
-@functools.lru_cache(maxsize=100)
+@functools.lru_cache(maxsize=800)
 def _get_relay_info(ws_url):
     http_url = re.sub(r'ws(s?)://', r'http\1://', ws_url)
     headers = {'Accept': 'application/nostr+json'}
@@ -173,7 +173,7 @@ def _get_relay_info(ws_url):
     return _req_json('post', http_url, headers=headers, timeout=1)
 
 
-@functools.lru_cache(maxsize=100)
+@functools.lru_cache(maxsize=200)
 def _get_link_preview(url):
     return _req_json('post', 'https://api.linkpreview.net', params={
         'key': env('LINKPREVIEW_API_KEY'),
