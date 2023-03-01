@@ -93,7 +93,7 @@ def transaction():
                 connection.commit()
             finally:
                 cursor = None
-    except InterfaceError as exc:
+    except InterfaceError:
         reconnect()
 
         with transaction():

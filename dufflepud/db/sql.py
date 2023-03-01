@@ -34,24 +34,24 @@ def prep_select(select):
 @eager
 def prep_where_clauses(where):
     if is_safe(where):
-        return where
+        yield where
 
     if type(where) == dict:
         for k, v in where.items():
             yield SQL(' = ').join([identifier(k), literal(v)])
-
-    for op, cond in where:
-        if op == 'not':
-            yield SQL('{} ({})').format(
-                SQL(op.upper()),
-                SQL(' AND ').join(prep_where_clauses(cond))
-            )
-        elif op in {'and', 'or'}:
-            yield SQL(f' {op.upper()} ').join(prep_where_clauses(cond))
-        elif op in {'=', '!=', '!=', '>', '<', '>=', '<='}:
-            yield SQL(f' {op} ').join([identifier(cond[0]), literal(cond[1])])
-        else:
-            raise ValueError(op)
+    else:
+        for op, cond in where:
+            if op == 'not':
+                yield SQL('{} ({})').format(
+                    SQL(op.upper()),
+                    SQL(' AND ').join(prep_where_clauses(cond))
+                )
+            elif op in {'and', 'or'}:
+                yield SQL(f' {op.upper()} ').join(prep_where_clauses(cond))
+            elif op in {'=', '!=', '!=', '>', '<', '>=', '<='}:
+                yield SQL(f' {op} ').join([identifier(cond[0]), literal(cond[1])])
+            else:
+                raise ValueError(op)
 
 
 def prep_where(where):

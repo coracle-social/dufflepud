@@ -11,6 +11,8 @@ flask-cors = "*"
 toml = "*"
 requests = "*"
 psycopg2 = "*"
+flake8 = "*"
+boto3 = "*"
 
 [dev-packages]
 

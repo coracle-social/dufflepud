@@ -9,3 +9,19 @@ with transaction():
         created_at timestamp NOT NULL
     )
     """)
+
+
+    execute("""
+    CREATE TABLE IF NOT EXISTS quote (
+        id uuid PRIMARY KEY,
+        invoice text
+    )
+    """)
+
+    execute("""
+    CREATE TABLE IF NOT EXISTS upload (
+        id uuid PRIMARY KEY,
+        quote uuid NOT NULL,
+        size int NOT NULL
+    )
+    """)
