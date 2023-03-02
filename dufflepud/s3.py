@@ -1,5 +1,5 @@
 import boto3
-from raddoo import env, first
+from raddoo import env, first, spit
 
 
 def get_original_name(f):
@@ -49,3 +49,30 @@ def get_url(key):
 
     # Remove the signature, we're saving things with a public ACL
     return first(url.rsplit('?', 1))
+
+
+if __name__ == '__main__':
+    objects = sorted(
+        client.list_objects(Bucket=BUCKET, Prefix='uploads/')['Contents'],
+        key=lambda x: -x['LastModified'].timestamp()
+    )
+
+    items = []
+    for i, x in enumerate(objects):
+        if i > 1000:
+            break
+
+        items.append(f"""
+        <div style="padding-top: 10px">
+            <div>{x['Key']}</div>
+            <img width="320" src="{get_url(x['Key'])}" />
+        </div>
+        """)
+
+    html = f"""
+    <div style="display: grid; gap: 20px; grid-template-columns: 1fr 1fr 1fr;">
+        <div>{'</div><div>'.join(items)}</div>
+    </div>
+    """
+
+    spit('objects.html', html)
