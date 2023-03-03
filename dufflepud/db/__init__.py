@@ -25,3 +25,7 @@ with transaction():
         size int NOT NULL
     )
     """)
+
+    execute("""
+    ALTER TABLE usage ADD COLUMN ident text
+    """)

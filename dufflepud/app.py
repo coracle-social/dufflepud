@@ -25,13 +25,14 @@ cors = CORS(app, resource={
 })
 
 
-@app.route('/usage/<session>/<name>', methods=['POST'])
-def usage_post(session, name):
+@app.route('/usage/<ident>/<session>/<name>', methods=['POST'])
+def usage_post(ident, session, name):
     name = b64decode(name).decode('utf-8')
 
     with model.db.transaction():
         model.insert('usage', {
             'name': name,
+            'ident': ident,
             'session': session,
             'created_at': now(),
         })
