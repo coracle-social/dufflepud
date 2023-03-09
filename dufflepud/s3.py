@@ -57,6 +57,8 @@ if __name__ == '__main__':
         key=lambda x: -x['LastModified'].timestamp()
     )
 
+    print(f"{len(objects)} objects found")
+
     items = []
     for i, x in enumerate(objects):
         if i > 1000:

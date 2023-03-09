@@ -43,12 +43,14 @@ def usage_post(ident, session, name):
 @app.route('/relay', methods=['GET'])
 def relay_list():
     try:
-        return _get_relays()
+        result = _get_relays()
     except Exception as exc:
         logger.exception(exc)
 
-        return json.loads(slurp('relays.json'))
+    if not result:
+        result = json.loads(slurp('relays.json'))
 
+    return result
 
 @app.route('/relay/info', methods=['POST'])
 def relay_info():
@@ -163,7 +165,7 @@ def get_size(fh):
 
 @functools.lru_cache()
 def _get_relays():
-    return requests.get('https://nostr.watch/relays.json').json()
+    return _req_json('get', 'https://nostr.watch/relays.json')
 
 
 @functools.lru_cache(maxsize=800)
