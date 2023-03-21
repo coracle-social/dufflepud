@@ -59,15 +59,20 @@ if __name__ == '__main__':
 
     print(f"{len(objects)} objects found")
 
+    size = 0
     items = []
     for i, x in enumerate(objects):
         if i > 1000:
             break
 
+        size += x['Size']
+        url = get_url(x['Key'])
+        tag = 'video' if url.endswith('mp4') else 'img'
+
         items.append(f"""
         <div style="padding-top: 10px">
             <div>{x['Key']}</div>
-            <img width="320" src="{get_url(x['Key'])}" />
+            <{tag} controls width="320" src="{url}" />
         </div>
         """)
 
@@ -78,3 +83,5 @@ if __name__ == '__main__':
     """
 
     spit('objects.html', html)
+
+    print(f"Total: {round(size/1024/1024)}mb")
