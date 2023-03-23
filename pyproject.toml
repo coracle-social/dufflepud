@@ -1,0 +1,26 @@
+[tool.poetry]
+name = "dufflepud"
+version = "0.1.0"
+description = "A media server for the coracle nostr client"
+authors = ["Your Name <you@example.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+raddoo = "^0.0.18"
+flask = "^2.2.3"
+gunicorn = "^20.1.0"
+flask-cors = "^3.0.10"
+toml = "^0.10.2"
+requests = "^2.28.2"
+psycopg2 = "^2.9.5"
+boto3 = "^1.26.98"
+
+
+[tool.poetry.group.dev.dependencies]
+flake8 = "^6.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
