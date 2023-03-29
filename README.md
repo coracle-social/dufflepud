@@ -7,7 +7,7 @@ A media server for the Coracle nostr client.
 First, get the repository and install dependencies. You'll need to have [poetry](https://python-poetry.org/) installed.
 
 ```
-git clone https://github.com/staab/dufflepud.git
+git clone https://github.com/coracle-social/dufflepud.git
 cd dufflepud
 poetry install
 ```
