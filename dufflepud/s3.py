@@ -1,4 +1,4 @@
-import boto3
+import boto3, re
 from raddoo import env, first, spit
 
 
@@ -62,12 +62,10 @@ if __name__ == '__main__':
     size = 0
     items = []
     for i, x in enumerate(objects):
-        if i > 1000:
-            break
-
         size += x['Size']
         url = get_url(x['Key'])
-        tag = 'video' if url.endswith('mp4') else 'img'
+        is_video = re.search(r'(mp4|mov|mpv)$', url)
+        tag = 'video' if is_video else 'img'
 
         items.append(f"""
         <div style="padding-top: 10px">
