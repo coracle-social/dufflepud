@@ -51,11 +51,25 @@ def get_url(key):
     return first(url.rsplit('?', 1))
 
 
+def get_all_objects():
+    page = None
+    load_more = True
+    results = []
+
+    while load_more:
+        if page:
+            page = client.list_objects_v2(Bucket=BUCKET, Prefix='uploads/', StartAfter=page['NextContinuationToken'])
+        else:
+            page = client.list_objects_v2(Bucket=BUCKET, Prefix='uploads/')
+
+        load_more = len(page['Contents']) == 1000
+        results.extend(page['Contents'])
+
+    return results
+
+
 if __name__ == '__main__':
-    objects = sorted(
-        client.list_objects(Bucket=BUCKET, Prefix='uploads/')['Contents'],
-        key=lambda x: -x['LastModified'].timestamp()
-    )
+    objects = sorted(get_all_objects(), key=lambda x: -x['LastModified'].timestamp())
 
     print(f"{len(objects)} objects found")
 
