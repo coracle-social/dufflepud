@@ -4,7 +4,7 @@ from requests.exceptions import (
     InvalidURL, TooManyRedirects)
 from base64 import b64decode
 from raddoo import env, slurp, random_uuid, identity, merge
-from flask import Flask, request
+from flask import Flask, request, abort
 from flask_cors import CORS
 from dufflepud.util import now
 from dufflepud.db import model
@@ -68,8 +68,20 @@ def link_preview():
     return _get_link_preview(url) or {}
 
 
+@app.route('/handle/info', methods=['POST'])
+def handle_info():
+    return _get_handle_info(get_json('handle')) or {}
+
+
+@app.route('/zapper/info', methods=['POST'])
+def zapper_info():
+    return _get_zapper_info(get_json('lnurl')) or {}
+
+
 @app.route('/upload/quote', methods=['POST'])
 def upload_quote():
+    abort(404)
+
     uploads = []
     for upload in get_json('uploads'):
         try:
@@ -104,6 +116,8 @@ def upload_quote():
 
 @app.route('/upload/<upload_id>', methods=['POST'])
 def upload_create(upload_id):
+    abort(404)
+
     with model.db.transaction():
         upload = model.get_by_id('upload', upload_id)
 
@@ -168,7 +182,7 @@ def _get_relays():
     return _req_json('get', 'https://nostr.watch/relays.json')
 
 
-@functools.lru_cache(maxsize=800)
+@functools.lru_cache(maxsize=2000)
 def _get_relay_info(ws_url):
     http_url = re.sub(r'ws(s?)://', r'http\1://', ws_url)
     headers = {'Accept': 'application/nostr+json'}
@@ -176,12 +190,25 @@ def _get_relay_info(ws_url):
     return _req_json('post', http_url, headers=headers, timeout=1)
 
 
-@functools.lru_cache(maxsize=200)
+@functools.lru_cache(maxsize=1000)
 def _get_link_preview(url):
     return _req_json('post', 'https://api.linkpreview.net', params={
         'key': env('LINKPREVIEW_API_KEY'),
         'q': url,
     })
+
+
+@functools.lru_cache(maxsize=10000)
+def _get_handle_info(handle):
+    name, domain = re.match(r'^(?:([\w.+-]+)@)?([\w.-]+)$', handle).groups()
+    res = _req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}')
+
+    return {'pubkey': res.get('names', {}).get(name) if res else None}
+
+
+@functools.lru_cache(maxsize=10000)
+def _get_zapper_info(lnurl):
+    return _req_json('get', lnurl)
 
 
 def _req(*args, **kwargs):

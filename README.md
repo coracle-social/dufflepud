@@ -12,6 +12,6 @@ cd dufflepud
 poetry install
 ```
 
-Next, fill out the environment file by running `cp env.template env.local` and adding values for the linkpreview api, database url, and s3 bucket information. If you're running this on a PaaS, you'll want to use their environment settings since env.local is not committed to version control.
+Next, fill out the environment file by running `cp env.template env.local` and adding values for the linkpreview api and database url. If you're running this on a PaaS, you'll want to use their environment settings since env.local is not committed to version control.
 
 Finally, enter `poetry run ./start` to start the server.
