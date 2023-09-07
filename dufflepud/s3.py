@@ -1,5 +1,5 @@
 import boto3, re
-from raddoo import env, first, spit
+from raddoo import env, first
 
 
 def get_original_name(f):
@@ -62,38 +62,18 @@ def get_all_objects():
         else:
             page = client.list_objects_v2(Bucket=BUCKET, Prefix='uploads/')
 
-        load_more = len(page['Contents']) == 1000
+        load_more = len(page['Contents']) >= 1000
         results.extend(page['Contents'])
 
     return results
 
 
-if __name__ == '__main__':
-    objects = sorted(get_all_objects(), key=lambda x: -x['LastModified'].timestamp())
-
-    print(f"{len(objects)} objects found")
-
-    size = 0
-    items = []
-    for i, x in enumerate(objects):
-        size += x['Size']
+def get_moderation_list():
+    media = []
+    for i, x in enumerate(sorted(get_all_objects(), key=lambda x: -x['LastModified'].timestamp())):
         url = get_url(x['Key'])
-        is_video = re.search(r'(mp4|mov|mpv)$', url)
-        tag = 'video' if is_video else 'img'
+        ext = url.split('.')[-1]
 
-        items.append(f"""
-        <div style="padding-top: 10px">
-            <div>{x['Key']}</div>
-            <{tag} controls width="320" src="{url}" />
-        </div>
-        """)
+        media.append({'url': url, 'ext': ext, 'key': x['Key']})
 
-    html = f"""
-    <div style="display: grid; gap: 20px; grid-template-columns: 1fr 1fr 1fr;">
-        <div>{'</div><div>'.join(items)}</div>
-    </div>
-    """
-
-    spit('objects.html', html)
-
-    print(f"Total: {round(size/1024/1024)}mb")
+    return media

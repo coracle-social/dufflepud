@@ -1,0 +1,77 @@
+<html>
+  <head>
+  </head>
+  <body>
+    <div>
+      <div style="display: flex; justify-content: center; margin: 20px; gap: 1rem">
+        <button id="$prev">Prev</button>
+        <span id="$page"></span>
+        <button id="$next">Next</button>
+      </div>
+      <div id="$media" style="display: grid; gap: 20px; grid-template-columns: 1fr 1fr 1fr;">
+      </div>
+    </div>
+    <script type="text/javascript">
+      const media = {{media|safe}}
+
+      let page = 325
+      let pageSize = 6
+
+      function showPage() {
+        $page.innerHTML = page
+        $media.innerHTML = ""
+
+        media.slice(page * pageSize, (page + 1) * pageSize).forEach(({url, key, ext}) => {
+          const $wrapper = document.createElement('div')
+          const $item = document.createElement(['mp4', 'mov', 'mpv'].includes(ext) ? 'video' : 'img')
+          const $controls = document.createElement('controls')
+          const $button = document.createElement('button')
+
+          $wrapper.style = "display: flex; flex-direction: column;"
+
+          $item.style = "margin: auto"
+          $item.controls = true
+          $item.width = '200'
+          $item.src = url
+
+          $controls.style = "padding: 10px; display: flex; justify-content: center"
+
+          $button.innerText = "Delete"
+          $button.addEventListener('click', () => {
+            $item.remove()
+            $controls.remove()
+
+            fetch(key, {method: 'delete'})
+          })
+
+          $controls.appendChild($button)
+          $wrapper.appendChild($item)
+          $wrapper.appendChild($controls)
+
+          $media.appendChild($wrapper)
+        })
+
+        media.slice((page + 1) * pageSize, (page + 2) * pageSize).forEach(({url, key, ext}) => {
+          const $item = document.createElement(['mp4', 'mov', 'mpv'].includes(ext) ? 'video' : 'img')
+
+          $item.style = "display: none;"
+          $item.src = url
+
+          $media.appendChild($item)
+        })
+      }
+
+      showPage()
+
+      $prev.addEventListener('click', () => {
+        page--
+        showPage()
+      })
+
+      $next.addEventListener('click', () => {
+        page++
+        showPage()
+      })
+    </script>
+  </body>
+</html>

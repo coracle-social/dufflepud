@@ -4,7 +4,7 @@ from requests.exceptions import (
     InvalidURL, TooManyRedirects)
 from base64 import b64decode
 from raddoo import env, slurp, random_uuid, identity, merge
-from flask import Flask, request, abort
+from flask import Flask, request, abort, render_template
 from flask_cors import CORS
 from dufflepud.util import now
 from dufflepud.db import model
@@ -139,6 +139,23 @@ def upload_create(upload_id):
     s3.put(key, fh, mimetype)
 
     return {"url": s3.get_url(key)}
+
+
+@app.route('/moderate', methods=['GET'])
+def moderate():
+    abort(404)
+
+    return render_template('moderate.html', media=json.dumps(s3.get_moderation_list()))
+
+
+@app.route('/<path:key>', methods=['DELETE'])
+def upload_delete(key):
+    abort(404)
+
+    s3.delete(key.split('/', 1)[1])
+
+    return {}
+
 
 
 # Utils
