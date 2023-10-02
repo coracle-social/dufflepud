@@ -53,17 +53,23 @@ def relay_list():
 
 @app.route('/relay/info', methods=['POST'])
 def relay_info():
-    return _get_relay_info(get_json('url')) or {}
+    urls = get_json('urls') if request.json.get('urls') else [get_json('url')]
+
+    return {'data': [{'url': url, 'info': _get_relay_info(url)} for url in urls]}
 
 
 @app.route('/handle/info', methods=['POST'])
 def handle_info():
-    return _get_handle_info(get_json('handle')) or {}
+    handles = get_json('handles') if request.json.get('handles') else [get_json('handle')]
+
+    return {'data': [{'handle': handle, 'info': _get_handle_info(handle)} for handle in handles]}
 
 
 @app.route('/zapper/info', methods=['POST'])
 def zapper_info():
-    return _get_zapper_info(get_json('lnurl')) or {}
+    lnurls = get_json('lnurls') if request.json.get('lnurls') else [get_json('lnurl')]
+
+    return {'data': [{'lnurl': lnurl, 'info': _get_zapper_info(lnurl)} for lnurl in lnurls]}
 
 
 @app.route('/link/preview', methods=['POST'])
@@ -151,7 +157,7 @@ def _get_zapper_info(lnurl):
     return req_json('get', lnurl)
 
 
-@functools.lru_cache(maxsize=1000)
+@functools.lru_cache(maxsize=5000)
 def _get_link_preview(url):
     return req_json('post', 'https://api.linkpreview.net', params={
         'key': env('LINKPREVIEW_API_KEY'),
