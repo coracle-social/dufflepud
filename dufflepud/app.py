@@ -146,7 +146,12 @@ def _get_relay_info(ws_url):
 
 @functools.lru_cache(maxsize=10000)
 def _get_handle_info(handle):
-    name, domain = re.match(r'^(?:([\w.+-]+)@)?([\w.-]+)$', handle).groups()
+    m = re.match(r'^(?:([\w.+-]+)@)?([\w.-]+)$', handle)
+
+    if not m:
+        return {'pubkey': None}
+
+    name, domain = m.groups()
     res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}')
 
     return {'pubkey': res.get('names', {}).get(name) if res else None}
