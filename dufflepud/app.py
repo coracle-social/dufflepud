@@ -1,4 +1,5 @@
 import requests, functools, re, logging, json, mimetypes, os
+from urllib3.exceptions import LocationParseError
 from requests.exceptions import (
     ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema,
     InvalidURL, TooManyRedirects)
@@ -115,7 +116,7 @@ def req(*args, **kwargs):
     try:
         return requests.request(*args, **kwargs)
     except (ConnectionError, ReadTimeout, InvalidSchema, InvalidURL, MissingSchema,
-            TooManyRedirects, UnicodeError):
+            TooManyRedirects, UnicodeError, LocationParseError):
         return None
 
 
