@@ -154,11 +154,12 @@ def _get_handle_info(handle):
 
     name, domain = m.groups()
     res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}') or {}
+    pubkey = res.get('names', {}).get(name)
 
     return {
-        'relays': res.get('relays', {}).get(name),
-        'pubkey': res.get('names', {}).get(name),
-        'nip46': res.get('nip46', {}).get(name),
+        'pubkey': pubkey,
+        'relays': res.get('relays', {}).get(pubkey),
+        'nip46': res.get('nip46', {}).get(pubkey),
     }
 
 
