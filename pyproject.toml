@@ -15,8 +15,6 @@ flask-cors = "^3.0.10"
 toml = "^0.10.2"
 requests = "^2.28.2"
 psycopg2 = "^2.9.5"
-boto3 = "^1.26.98"
-
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^6.0.0"
