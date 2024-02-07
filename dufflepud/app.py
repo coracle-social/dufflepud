@@ -153,9 +153,13 @@ def _get_handle_info(handle):
         return {'pubkey': None}
 
     name, domain = m.groups()
-    res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}')
+    res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}') or {}
 
-    return {'pubkey': res.get('names', {}).get(name) if res else None}
+    return {
+        'relays': res.get('relays', {}).get(name),
+        'pubkey': res.get('names', {}).get(name),
+        'nip46': res.get('nip46', {}).get(name),
+    }
 
 
 @functools.lru_cache(maxsize=10000)
