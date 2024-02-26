@@ -153,7 +153,11 @@ def _get_handle_info(handle):
         return {'pubkey': None}
 
     name, domain = m.groups()
-    res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}') or {}
+    res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}')
+
+    if not res:
+        return {'pubkey': None}
+
     pubkey = res.get('names', {}).get(name)
 
     return {
