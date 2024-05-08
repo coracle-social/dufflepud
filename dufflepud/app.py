@@ -1,14 +1,12 @@
 import requests, functools, re, logging, json, mimetypes, os
+from datetime import datetime, timezone
 from urllib3.exceptions import LocationParseError
 from requests.exceptions import (
     ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema,
     InvalidURL, TooManyRedirects)
-from base64 import b64decode
 from raddoo import env, slurp, random_uuid, identity, merge
 from flask import Flask, request
 from flask_cors import CORS
-from dufflepud.util import now
-from dufflepud.db import model
 
 MAX_CONTENT_LENGTH = env('MAX_CONTENT_LENGTH')
 
@@ -23,22 +21,6 @@ cors = CORS(app, resource={
         "origins": "*"
     }
 })
-
-
-@app.route('/usage/<ident>/<session>/<name>', methods=['POST'])
-def usage_post(ident, session, name):
-    name = b64decode(name).decode('utf-8')
-
-    with model.db.transaction():
-        model.insert('usage', {
-            'name': name,
-            'ident': ident,
-            'session': session,
-            'created_at': now(),
-        })
-
-    return {}
-
 
 @app.route('/relay', methods=['GET'])
 def relay_list():
@@ -85,6 +67,10 @@ def link_preview():
 
 
 # Utils
+
+
+def now():
+    return datetime.now(timezone.utc)
 
 
 def err(code, message):
