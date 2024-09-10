@@ -4,4 +4,4 @@ if [[ -f env.local ]]; then
   export $(cat env.local)
 fi
 
-gunicorn dufflepud.app:app
+gunicorn --worker-class gevent dufflepud.app:app

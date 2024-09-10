@@ -1,4 +1,4 @@
-import requests, functools, re, logging, json, mimetypes, os
+import requests, functools, re, logging, json, mimetypes, os, redis, asyncio, aiohttp
 from datetime import datetime, timezone
 from urllib3.exceptions import LocationParseError
 from requests.exceptions import (
@@ -7,8 +7,12 @@ from requests.exceptions import (
 from raddoo import env, slurp, random_uuid, identity, merge
 from flask import Flask, request
 from flask_cors import CORS
+from werkzeug.exceptions import BadRequest
 
 MAX_CONTENT_LENGTH = env('MAX_CONTENT_LENGTH')
+REDIS_URL = env('REDIS_URL')
+
+redis_client = redis.from_url(REDIS_URL)
 
 app = Flask(__name__)
 
@@ -35,35 +39,40 @@ def relay_list():
     return result
 
 @app.route('/relay/info', methods=['POST'])
-def relay_info():
-    urls = get_json('urls') if request.json.get('urls') else [get_json('url')]
+async def relay_info():
+    urls = get_json('urls')
 
-    return {'data': [{'url': url, 'info': _get_relay_info(url)} for url in urls]}
+    results = await asyncio.gather(*[_get_relay_info(url) for url in urls])
+
+    return {'data': [{'url': url, 'info': info} for url, info in zip(urls, results)]}
 
 
 @app.route('/handle/info', methods=['POST'])
-def handle_info():
-    handles = get_json('handles') if request.json.get('handles') else [get_json('handle')]
+async def handle_info():
+    handles = get_json('handles')
 
-    return {'data': [{'handle': handle, 'info': _get_handle_info(handle)} for handle in handles]}
+    results = await asyncio.gather(*[_get_handle_info(handle) for handle in handles])
+
+    return {'data': [{'handle': handle, 'info': info} for handle, info in zip(handles, results)]}
 
 
 @app.route('/zapper/info', methods=['POST'])
-def zapper_info():
-    lnurls = get_json('lnurls') if request.json.get('lnurls') else [get_json('lnurl')]
+async def zapper_info():
+    lnurls = get_json('lnurls')
+    results = await asyncio.gather(*[_get_zapper_info(lnurl) for lnurl in lnurls])
 
-    return {'data': [{'lnurl': lnurl, 'info': _get_zapper_info(lnurl)} for lnurl in lnurls]}
+    return {'data': [{'lnurl': lnurl, 'info': info} for lnurl, info in zip(lnurls, results)]}
 
 
 @app.route('/link/preview', methods=['POST'])
-def link_preview():
+async def link_preview():
     url = get_json('url')
     res = req('head', url)
 
     if (res.headers.get('Content-Type', '') if res else '').startswith('image/'):
         return {'title': "", 'description': "", 'image': url, 'url': url}
 
-    return _get_link_preview(url) or {}
+    return await _get_link_preview(url) or {}
 
 
 # Utils
@@ -95,7 +104,7 @@ def get_json(name, coerce=identity):
     try:
         return coerce(request.json[name])
     except (ValueError, KeyError):
-        return err('invalid-json', f"`{name}` is a required parameter")
+        raise BadRequest(f"`{name}` is a required parameter")
 
 
 def req(*args, **kwargs):
@@ -118,28 +127,60 @@ def req_json(*args, **kwargs):
         return None
 
 
+async def req_json_async(method, url, **kw):
+    async with aiohttp.ClientSession() as session:
+        try:
+            f = getattr(session, method)
+
+            async with f(url, **kw) as response:
+                return json.loads(await response.text())
+        except (ConnectionError, ReadTimeout, InvalidSchema, InvalidURL, MissingSchema,
+                TooManyRedirects, UnicodeError, LocationParseError, json.decoder.JSONDecodeError):
+            return None
+
+
+def redis_cache(ns, expiration_time=3600):
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(key):
+            cache_key = f"{ns}:{key}"
+
+            cached_result = redis_client.get(cache_key)
+            if cached_result:
+                return json.loads(cached_result)
+
+            result = await func(key)
+
+            redis_client.setex(cache_key, expiration_time, json.dumps(result))
+
+            return result
+        return wrapper
+    return decorator
+
+# Loaders
+
 @functools.lru_cache()
 def _get_relays():
     return req_json('get', 'https://nostr.watch/relays.json')
 
 
-@functools.lru_cache(maxsize=2000)
-def _get_relay_info(ws_url):
+@redis_cache('relay')
+async def _get_relay_info(ws_url):
     http_url = re.sub(r'ws(s?)://', r'http\1://', ws_url)
     headers = {'Accept': 'application/nostr+json'}
 
-    return req_json('post', http_url, headers=headers, timeout=1)
+    return await req_json_async('post', http_url, headers=headers, timeout=1)
 
 
-@functools.lru_cache(maxsize=10000)
-def _get_handle_info(handle):
+@redis_cache('handle')
+async def _get_handle_info(handle):
     m = re.match(r'^(?:([\w.+-]+)@)?([\w.-]+)$', handle)
 
     if not m:
         return {'pubkey': None}
 
     name, domain = m.groups()
-    res = req_json('get', f'https://{domain}/.well-known/nostr.json?name={name}')
+    res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
 
     if not res:
         return {'pubkey': None}
@@ -153,14 +194,14 @@ def _get_handle_info(handle):
     }
 
 
-@functools.lru_cache(maxsize=10000)
-def _get_zapper_info(lnurl):
-    return req_json('get', lnurl)
+@redis_cache('zapper')
+async def _get_zapper_info(lnurl):
+    return await req_json_async('get', lnurl)
 
 
-@functools.lru_cache(maxsize=5000)
-def _get_link_preview(url):
-    return req_json('post', 'https://api.linkpreview.net', params={
+@redis_cache('link_preview')
+async def _get_link_preview(url):
+    return await req_json_async('post', 'https://api.linkpreview.net', params={
         'key': env('LINKPREVIEW_API_KEY'),
         'q': url,
     })
