@@ -134,8 +134,7 @@ async def req_json_async(method, url, **kw):
 
             async with f(url, **kw) as response:
                 return json.loads(await response.text())
-        except (ConnectionError, ReadTimeout, InvalidSchema, InvalidURL, MissingSchema,
-                TooManyRedirects, UnicodeError, LocationParseError, json.decoder.JSONDecodeError):
+        except:
             return None
 
 
