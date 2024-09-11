@@ -12,5 +12,7 @@ for package, constraint in result['tool']['poetry']['dependencies'].items():
         print(package)
     elif type(constraint) == str:
         print(f'{package}=={constraint[1:]}')
+    elif constraint["version"] == '*':
+        print(f'{package}[{constraint["extras"][0]}]')
     else:
         print(f'{package}[{constraint["extras"][0]}]=={constraint["version"][1:]}')

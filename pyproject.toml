@@ -9,7 +9,7 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 raddoo = "^0.0.18"
-flask = {extras = ["async"], version = "^3.0.3"}
+flask = {extras = ["async"], version = "*"}
 gunicorn = "^20.1.0"
 flask-cors = "^3.0.10"
 toml = "^0.10.2"
