@@ -8,11 +8,4 @@ for package, constraint in result['tool']['poetry']['dependencies'].items():
     if package == 'python':
         continue
 
-    if constraint == '*':
-        print(package)
-    elif type(constraint) == str:
-        print(f'{package}=={constraint[1:]}')
-    elif constraint["version"] == '*':
-        print(f'{package}[{constraint["extras"][0]}]')
-    else:
-        print(f'{package}[{constraint["extras"][0]}]=={constraint["version"][1:]}')
+    print(package)
