@@ -132,7 +132,7 @@ async def req_json_async(method, url, **kw):
         try:
             f = getattr(session, method)
 
-            async with f(url, **kw) as response:
+            async with f(url, timeout=10, **kw) as response:
                 return json.loads(await response.text())
         except:
             return None
@@ -168,7 +168,7 @@ async def _get_relay_info(ws_url):
     http_url = re.sub(r'ws(s?)://', r'http\1://', ws_url)
     headers = {'Accept': 'application/nostr+json'}
 
-    return await req_json_async('post', http_url, headers=headers, timeout=1)
+    return await req_json_async('get', http_url, headers=headers)
 
 
 @redis_cache('handle')
