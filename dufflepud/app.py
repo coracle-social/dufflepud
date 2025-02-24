@@ -75,6 +75,13 @@ async def link_preview():
     return await _get_link_preview(url) or {}
 
 
+@app.route('/media/alert', methods=['POST'])
+async def link_alert():
+    url = get_json('url')
+
+    return await _get_media_alert(url) or {}
+
+
 # Utils
 
 
@@ -203,4 +210,11 @@ async def _get_link_preview(url):
     return await req_json_async('post', 'https://api.linkpreview.net', params={
         'key': env('LINKPREVIEW_API_KEY'),
         'q': url,
+    })
+
+@redis_cache('media_alert')
+async def _get_media_alert(url):
+    return await req_json_async('get', 'https://nostr-media-alert.com/score', params={
+        'key': env('MEDIA_ALERT_API_KEY'),
+        'url': url,
     })
