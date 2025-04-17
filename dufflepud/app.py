@@ -183,15 +183,18 @@ async def _get_handle_info(handle):
     m = re.match(r'^(?:([\w.+-]+)@)?([\w.-]+)$', handle)
 
     if not m:
-        return {'pubkey': None}
+        return None
 
     name, domain = m.groups()
     res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
 
     if not res:
-        return {'pubkey': None}
+        return None
 
     pubkey = res.get('names', {}).get(name)
+
+    if not pubkey:
+        return None
 
     return {
         'pubkey': pubkey,
