@@ -180,12 +180,10 @@ async def _get_relay_info(ws_url):
 
 @redis_cache('handle')
 async def _get_handle_info(handle):
-    m = re.match(r'^(?:([\w.+-]+)@)?([\w.-]+)$', handle)
+    parts = handle.split('@')
+    name = parts[0] if len(parts) > 1 else '_'
+    domain = parts[-1]
 
-    if not m:
-        return None
-
-    name, domain = m.groups()
     res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
 
     if not res:
