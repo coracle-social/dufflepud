@@ -145,7 +145,7 @@ async def req_json_async(method, url, **kw):
             return None
 
 
-def redis_cache(ns, expiration_time=3600):
+def redis_cache(ns, expiration_time=300):
     def decorator(func):
         @functools.wraps(func)
         async def wrapper(key):
