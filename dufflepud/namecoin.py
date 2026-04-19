@@ -197,16 +197,23 @@ class ElectrumxServer:
 def parse_servers(spec: str) -> List[ElectrumxServer]:
     """Parse a comma-separated list of server URLs.
 
-    The literal ``default`` (case-insensitive) expands to the built-in
-    list of public Namecoin ElectrumX servers.
+    Special tokens (case-insensitive):
+      * ``default`` - expands to the public clearnet server list
+      * ``tor`` - expands to the Tor-preferred list (onion primary,
+        clearnet fallback). Requires a SOCKS5 proxy reachable via
+        ``NAMECOIN_SOCKS5_PROXY`` or ``ALL_PROXY``.
     """
     out: List[ElectrumxServer] = []
     for piece in spec.split(","):
         piece = piece.strip()
         if not piece:
             continue
-        if piece.lower() == "default":
+        lower = piece.lower()
+        if lower == "default":
             out.extend(DEFAULT_ELECTRUMX_SERVERS)
+            continue
+        if lower == "tor":
+            out.extend(TOR_ELECTRUMX_SERVERS)
             continue
         out.append(ElectrumxServer.parse(piece))
     # de-dupe while preserving order
@@ -228,6 +235,19 @@ DEFAULT_ELECTRUMX_SERVERS: List[ElectrumxServer] = [
     ElectrumxServer("tcp+tls", "46.229.238.187", 57002),
 ]
 
+# Tor-preferred server list: onion primary, clearnet fallback. Mirrors
+# Amethyst's TOR_ELECTRUMX_SERVERS. Use by setting
+# NAMECOIN_ELECTRUMX_SERVERS=tor.
+TOR_ELECTRUMX_SERVERS: List[ElectrumxServer] = [
+    ElectrumxServer(
+        "tcp+tls",
+        "i665jpwsq46zlsdbnj4axgzd3s56uzey5uhotsnxzsknzbn36jaddsid.onion",
+        50002,
+    ),
+    ElectrumxServer("tcp+tls", "electrumx.testls.space", 50002),
+    ElectrumxServer("tcp+tls", "nmc2.bitcoins.sk", 57002),
+]
+
 
 # ── configuration model ────────────────────────────────────────────────────
 
@@ -243,11 +263,17 @@ class NamecoinConfig:
     rpc_url: Optional[str] = None
     electrumx_servers: List[ElectrumxServer] = field(default_factory=list)
     extra_pinned_certs: List[str] = field(default_factory=list)
+    socks5_proxy: Optional[str] = None  # e.g. socks5://127.0.0.1:9050 (Tor)
     connect_timeout: float = 10.0
     read_timeout: float = 15.0
     lookup_timeout: float = 20.0
     cache_ttl: float = 3600.0
     cache_max_entries: int = 500
+    # Circuit-breaker tuning: after this many consecutive errors against
+    # a single server, skip it for `server_cooldown` seconds. Set to 0
+    # to disable.
+    server_error_threshold: int = 3
+    server_cooldown: float = 60.0
 
     @classmethod
     def from_env(cls, getter: Callable[[str], Optional[str]] = os.environ.get) -> "NamecoinConfig":
@@ -262,6 +288,13 @@ class NamecoinConfig:
 
         pins_raw = (getter("NAMECOIN_ELECTRUMX_PINS") or "").strip()
         extra_pins = _split_pem_blobs(pins_raw) if pins_raw else []
+
+        socks5 = (
+            getter("NAMECOIN_SOCKS5_PROXY")
+            or getter("ALL_PROXY")
+            or getter("all_proxy")
+            or ""
+        ).strip() or None
 
         def _float(name: str, default: float) -> float:
             raw = getter(name)
@@ -287,11 +320,14 @@ class NamecoinConfig:
             rpc_url=rpc_url,
             electrumx_servers=servers,
             extra_pinned_certs=extra_pins,
+            socks5_proxy=socks5,
             connect_timeout=_float("NAMECOIN_CONNECT_TIMEOUT", 10.0),
             read_timeout=_float("NAMECOIN_READ_TIMEOUT", 15.0),
             lookup_timeout=_float("NAMECOIN_LOOKUP_TIMEOUT", 20.0),
             cache_ttl=_float("NAMECOIN_CACHE_TTL", 3600.0),
             cache_max_entries=_int("NAMECOIN_CACHE_MAX_ENTRIES", 500),
+            server_error_threshold=_int("NAMECOIN_SERVER_ERROR_THRESHOLD", 3),
+            server_cooldown=_float("NAMECOIN_SERVER_COOLDOWN", 60.0),
         )
 
     @property
@@ -555,16 +591,23 @@ async def _fetch_value_with_tip(
             logger.warning("Namecoin RPC resolution failed for %s: %s", name, exc)
 
     for server in cfg.electrumx_servers:
+        if _server_in_cooldown(server):
+            logger.debug("skipping %s (cooldown)", server.describe())
+            continue
         try:
             raw, tip = await _electrumx_name_show(server, name, cfg)
             got_any_response = True
+            _record_server_success(server)
             if raw is not None:
                 return raw, tip
         except NameNotFound:
+            _record_server_success(server)  # definitive answer is healthy
             raise
         except NameExpired:
+            _record_server_success(server)
             raise
         except Exception as exc:
+            _record_server_error(server, cfg)
             last_error = exc
             logger.warning(
                 "ElectrumX resolution failed via %s: %s", server.describe(), exc
@@ -842,13 +885,67 @@ _CLIENT_IDENT = "dufflepud/0.1"
 _server_mutexes: Dict[str, asyncio.Lock] = {}
 
 
+def _server_key(server: ElectrumxServer) -> str:
+    return f"{server.scheme}://{server.host}:{server.port}"
+
+
 def _server_mutex(server: ElectrumxServer) -> asyncio.Lock:
-    key = f"{server.scheme}://{server.host}:{server.port}"
+    key = _server_key(server)
     lock = _server_mutexes.get(key)
     if lock is None:
         lock = asyncio.Lock()
         _server_mutexes[key] = lock
     return lock
+
+
+# Simple circuit-breaker state per server. After N consecutive errors,
+# the server enters cooldown for `server_cooldown` seconds before it's
+# tried again. Definitive blockchain answers (NameNotFound/NameExpired)
+# reset the counter.
+@dataclass
+class _ServerState:
+    consecutive_errors: int = 0
+    cooldown_until: float = 0.0  # monotonic timestamp
+
+
+_server_states: Dict[str, _ServerState] = {}
+
+
+def _server_state(server: ElectrumxServer) -> _ServerState:
+    key = _server_key(server)
+    st = _server_states.get(key)
+    if st is None:
+        st = _ServerState()
+        _server_states[key] = st
+    return st
+
+
+def _server_in_cooldown(server: ElectrumxServer) -> bool:
+    return _server_state(server).cooldown_until > time.monotonic()
+
+
+def _record_server_success(server: ElectrumxServer) -> None:
+    st = _server_state(server)
+    st.consecutive_errors = 0
+    st.cooldown_until = 0.0
+
+
+def _record_server_error(server: ElectrumxServer, cfg: NamecoinConfig) -> None:
+    if cfg.server_error_threshold <= 0:
+        return
+    st = _server_state(server)
+    st.consecutive_errors += 1
+    if st.consecutive_errors >= cfg.server_error_threshold:
+        st.cooldown_until = time.monotonic() + cfg.server_cooldown
+        logger.info(
+            "Namecoin server %s in cooldown for %.0fs after %d errors",
+            server.describe(),
+            cfg.server_cooldown,
+            st.consecutive_errors,
+        )
+        # Reset so we only cooldown once; next error after cooldown expires
+        # and fails again will re-arm.
+        st.consecutive_errors = 0
 
 
 async def _electrumx_name_show(
@@ -1003,15 +1100,27 @@ def _connect_tcp(server: ElectrumxServer, cfg: NamecoinConfig) -> _ConnectionCon
             if server.is_tls
             else None
         )
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                host=server.host,
-                port=server.port,
-                ssl=ssl_ctx,
-                server_hostname=server.host if server.is_tls else None,
-            ),
-            timeout=cfg.connect_timeout,
-        )
+        if cfg.socks5_proxy:
+            reader, writer = await asyncio.wait_for(
+                _open_connection_via_socks5(
+                    cfg.socks5_proxy,
+                    server.host,
+                    server.port,
+                    ssl_ctx=ssl_ctx,
+                    server_hostname=server.host if server.is_tls else None,
+                ),
+                timeout=cfg.connect_timeout,
+            )
+        else:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(
+                    host=server.host,
+                    port=server.port,
+                    ssl=ssl_ctx,
+                    server_hostname=server.host if server.is_tls else None,
+                ),
+                timeout=cfg.connect_timeout,
+            )
         state["writer"] = writer
 
         async def read() -> Optional[str]:
@@ -1041,8 +1150,153 @@ def _connect_tcp(server: ElectrumxServer, cfg: NamecoinConfig) -> _ConnectionCon
     return _ConnectionContext(enter, exit_)
 
 
+# ── SOCKS5 (RFC 1928) client for Tor/egress anonymity ─────────────────────
+
+
+_SOCKS5_VERSION = 0x05
+_SOCKS5_NO_AUTH = 0x00
+_SOCKS5_USER_PASS_AUTH = 0x02
+_SOCKS5_CMD_CONNECT = 0x01
+_SOCKS5_ADDR_DOMAIN = 0x03
+
+
+async def _open_connection_via_socks5(
+    proxy_url: str,
+    dst_host: str,
+    dst_port: int,
+    *,
+    ssl_ctx: Optional[ssl.SSLContext] = None,
+    server_hostname: Optional[str] = None,
+) -> Tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    """Connect through a SOCKS5 proxy and optionally upgrade to TLS.
+
+    Resolves the destination at the proxy (DNS leak prevention / onion
+    support) via SOCKS5's ADDR_DOMAIN address type. Supports optional
+    username/password auth embedded in the proxy URL.
+
+    Implemented in-process with stdlib only to avoid a new dependency
+    (``aiohttp-socks`` and ``python-socks`` would both pull transitive
+    deps for a protocol that is 30 lines of code).
+    """
+    parsed = urlparse(proxy_url)
+    scheme = (parsed.scheme or "socks5").lower()
+    if scheme not in {"socks5", "socks5h"}:
+        raise ValueError(f"unsupported proxy scheme: {scheme!r}")
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(f"proxy url missing host/port: {proxy_url!r}")
+
+    # 1. Plain TCP to the proxy.
+    reader, writer = await asyncio.open_connection(parsed.hostname, parsed.port)
+
+    try:
+        # 2. Greeting -> method selection.
+        methods = [_SOCKS5_NO_AUTH]
+        if parsed.username or parsed.password:
+            methods.append(_SOCKS5_USER_PASS_AUTH)
+        writer.write(bytes([_SOCKS5_VERSION, len(methods)] + methods))
+        await writer.drain()
+        ver, method = await reader.readexactly(2)
+        if ver != _SOCKS5_VERSION:
+            raise RuntimeError(f"SOCKS5 version mismatch: {ver}")
+        if method == 0xFF:
+            raise RuntimeError("SOCKS5 proxy rejected all auth methods")
+
+        # 3. Auth (user/pass, RFC 1929).
+        if method == _SOCKS5_USER_PASS_AUTH:
+            user = (parsed.username or "").encode("utf-8")
+            pw = (parsed.password or "").encode("utf-8")
+            if len(user) > 255 or len(pw) > 255:
+                raise RuntimeError("SOCKS5 user/pass too long")
+            writer.write(
+                bytes([0x01, len(user)]) + user + bytes([len(pw)]) + pw
+            )
+            await writer.drain()
+            auth_ver, auth_status = await reader.readexactly(2)
+            if auth_status != 0:
+                raise RuntimeError(f"SOCKS5 auth failed (status={auth_status})")
+
+        # 4. CONNECT request, addressing by domain name (leaves resolution
+        #    to the proxy, which is what we want for .onion and DNS-leak
+        #    prevention).
+        host_bytes = dst_host.encode("idna") if _is_ascii_host(dst_host) else dst_host.encode("utf-8")
+        if len(host_bytes) > 255:
+            raise RuntimeError("destination host too long for SOCKS5")
+        request = (
+            bytes([_SOCKS5_VERSION, _SOCKS5_CMD_CONNECT, 0x00, _SOCKS5_ADDR_DOMAIN, len(host_bytes)])
+            + host_bytes
+            + dst_port.to_bytes(2, "big")
+        )
+        writer.write(request)
+        await writer.drain()
+
+        # 5. Reply: VER REP RSV ATYP BND.ADDR BND.PORT
+        reply = await reader.readexactly(4)
+        if reply[0] != _SOCKS5_VERSION:
+            raise RuntimeError(f"SOCKS5 reply version mismatch: {reply[0]}")
+        rep_code = reply[1]
+        if rep_code != 0x00:
+            raise RuntimeError(f"SOCKS5 CONNECT failed (rep={rep_code})")
+        atyp = reply[3]
+        if atyp == 0x01:  # IPv4
+            await reader.readexactly(4)
+        elif atyp == 0x03:  # domain
+            domain_len = (await reader.readexactly(1))[0]
+            await reader.readexactly(domain_len)
+        elif atyp == 0x04:  # IPv6
+            await reader.readexactly(16)
+        else:
+            raise RuntimeError(f"SOCKS5 reply unknown address type: {atyp}")
+        await reader.readexactly(2)  # BND.PORT
+    except Exception:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            pass
+        raise
+
+    # 6. Optionally upgrade to TLS over the proxied stream. asyncio's
+    #    transport model makes this clunky: start_tls requires access
+    #    to the transport + protocol pair that StreamReader/Writer
+    #    wrap, so we reach in through the private _transport attr.
+    #    This is standard practice for SOCKS/TLS composition.
+    if ssl_ctx is not None:
+        loop = asyncio.get_running_loop()
+        transport = writer.transport
+        protocol = writer._protocol  # type: ignore[attr-defined]
+        new_transport = await loop.start_tls(
+            transport,
+            protocol,
+            ssl_ctx,
+            server_side=False,
+            server_hostname=server_hostname,
+        )
+        # Patch the reader/writer to point at the TLS transport.
+        protocol._stream_reader._transport = new_transport  # type: ignore[attr-defined]
+        writer._transport = new_transport  # type: ignore[attr-defined]
+
+    return reader, writer
+
+
+def _is_ascii_host(host: str) -> bool:
+    try:
+        host.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def _connect_ws(server: ElectrumxServer, cfg: NamecoinConfig) -> _ConnectionContext:
     state: dict = {}
+    if cfg.socks5_proxy:
+        # aiohttp's built-in proxy support is HTTP CONNECT only; SOCKS5
+        # requires the optional `aiohttp_socks` dependency which we are
+        # not pulling in. TCP+TLS ElectrumX servers work with SOCKS5
+        # today; use those instead.
+        raise RuntimeError(
+            "SOCKS5 proxy is only supported with tcp+tls servers; "
+            "use wss via an HTTP CONNECT proxy or switch to tcp+tls."
+        )
 
     async def enter() -> _ElectrumProtocol:
         ssl_ctx = (
@@ -1369,4 +1623,245 @@ def reload_config() -> NamecoinConfig:
     _config_cache = NamecoinConfig.from_env()
     _resolver_cache.clear()
     _pinned_ssl_context_cache.clear()
+    _server_states.clear()
     return _config_cache
+
+
+# ── admin / operator helpers ─────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ServerTestResult:
+    """Outcome of probing a single ElectrumX server.
+
+    Analogous to Amethyst's ``ServerTestResult`` but rendered for
+    server-side use (PEM cert capture for TOFU pinning, response-time
+    reporting, structured error messages).
+    """
+
+    server: ElectrumxServer
+    success: bool
+    response_time_ms: float
+    error: Optional[str] = None
+    tls_version: Optional[str] = None
+    cert_pem: Optional[str] = None
+    cert_sha256: Optional[str] = None
+    test_name_value: Optional[str] = None
+
+    def to_json(self) -> dict:
+        return {
+            "server": self.server.describe(),
+            "success": self.success,
+            "response_time_ms": round(self.response_time_ms, 2),
+            "error": self.error,
+            "tls_version": self.tls_version,
+            "cert_pem": self.cert_pem,
+            "cert_sha256": self.cert_sha256,
+            "test_name_found": self.test_name_value is not None,
+        }
+
+
+async def test_server(
+    server: ElectrumxServer,
+    cfg: Optional[NamecoinConfig] = None,
+    test_name: Optional[str] = "d/testls",
+) -> ServerTestResult:
+    """Probe a single ElectrumX server. Returns connectivity/cert details.
+
+    Designed for operators to validate a server + capture its cert for
+    inclusion in ``NAMECOIN_ELECTRUMX_PINS`` before adding it to
+    ``NAMECOIN_ELECTRUMX_SERVERS``. The captured cert is returned as PEM
+    plus SHA-256 fingerprint so the operator can visually confirm it
+    before pinning (TOFU-style).
+    """
+    cfg = cfg or _default_config()
+    start = time.monotonic()
+
+    cert_pem: Optional[str] = None
+    cert_sha256: Optional[str] = None
+    tls_version: Optional[str] = None
+
+    # Capture the cert out-of-band first so we can still report it even
+    # if the Electrum protocol exchange fails (e.g. self-signed cert
+    # that doesn't match the pin set).
+    if server.is_tls and server.scheme == "tcp+tls":
+        try:
+            cert_pem, cert_sha256, tls_version = await _probe_tls_cert(
+                server, cfg, timeout=cfg.connect_timeout
+            )
+        except Exception as exc:
+            logger.debug("cert probe for %s failed: %s", server.describe(), exc)
+
+    test_value: Optional[str] = None
+    try:
+        async with _connect_electrumx(server, cfg) as proto:
+            await asyncio.wait_for(
+                proto.call("server.version", [_CLIENT_IDENT, _PROTOCOL_VERSION]),
+                timeout=cfg.read_timeout,
+            )
+            if test_name:
+                try:
+                    test_value, _ = await asyncio.wait_for(
+                        _electrumx_scripthash_lookup(proto, test_name),
+                        timeout=cfg.read_timeout,
+                    )
+                except NameNotFound:
+                    test_value = None
+                except Exception as exc:
+                    logger.debug("test-name lookup on %s failed: %s",
+                                 server.describe(), exc)
+    except Exception as exc:
+        elapsed = (time.monotonic() - start) * 1000
+        return ServerTestResult(
+            server=server,
+            success=False,
+            response_time_ms=elapsed,
+            error=f"{type(exc).__name__}: {exc}",
+            tls_version=tls_version,
+            cert_pem=cert_pem,
+            cert_sha256=cert_sha256,
+        )
+
+    elapsed = (time.monotonic() - start) * 1000
+    return ServerTestResult(
+        server=server,
+        success=True,
+        response_time_ms=elapsed,
+        tls_version=tls_version,
+        cert_pem=cert_pem,
+        cert_sha256=cert_sha256,
+        test_name_value=test_value,
+    )
+
+
+async def _probe_tls_cert(
+    server: ElectrumxServer, cfg: NamecoinConfig, timeout: float
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Connect via TLS and capture the server leaf cert for TOFU pinning.
+
+    Uses a permissive SSLContext (verify_mode=NONE) so we can introspect
+    the cert *before* the operator adds it to the pin set. This is only
+    used by the admin ``test_server`` flow, never by normal resolution.
+    """
+    import ssl as _ssl
+    ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = _ssl.TLSVersion.TLSv1_2
+    ctx.check_hostname = False
+    ctx.verify_mode = _ssl.CERT_NONE
+
+    if cfg.socks5_proxy:
+        reader, writer = await asyncio.wait_for(
+            _open_connection_via_socks5(
+                cfg.socks5_proxy,
+                server.host,
+                server.port,
+                ssl_ctx=ctx,
+                server_hostname=server.host,
+            ),
+            timeout=timeout,
+        )
+    else:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(
+                host=server.host,
+                port=server.port,
+                ssl=ctx,
+                server_hostname=server.host,
+            ),
+            timeout=timeout,
+        )
+    try:
+        transport = writer.transport
+        sslobj = transport.get_extra_info("ssl_object")
+        tls_version = sslobj.version() if sslobj else None
+        der = transport.get_extra_info("peercert", default=None)
+        # asyncio returns the parsed peercert dict by default; for the
+        # raw DER we need binary_form=True, which only happens when the
+        # SSLContext was configured before handshake. Re-read directly.
+        der_bytes = None
+        if sslobj is not None:
+            try:
+                der_bytes = sslobj.getpeercert(binary_form=True)
+            except Exception:
+                der_bytes = None
+        pem: Optional[str] = None
+        sha256: Optional[str] = None
+        if der_bytes:
+            pem = _ssl.DER_cert_to_PEM_cert(der_bytes).strip()
+            sha256 = ":".join(
+                f"{b:02X}" for b in hashlib.sha256(der_bytes).digest()
+            )
+        return pem, sha256, tls_version
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+
+
+async def _electrumx_scripthash_lookup(
+    proto: "_ElectrumProtocol", name: str
+) -> Tuple[Optional[str], Optional[int]]:
+    """Shared helper: run the Electrum scripthash dance for a name."""
+    script = _build_name_index_script(name.encode("ascii"))
+    script_hash = _electrum_script_hash(script)
+    history = await proto.call(
+        "blockchain.scripthash.get_history", [script_hash]
+    )
+    if not isinstance(history, list) or not history:
+        raise NameNotFound(name)
+    latest = history[-1]
+    if not isinstance(latest, dict):
+        raise NameNotFound(name)
+    tx_hash = latest.get("tx_hash")
+    height = int(latest.get("height") or 0)
+    if not isinstance(tx_hash, str) or not tx_hash:
+        raise NameNotFound(name)
+    tx = await proto.call("blockchain.transaction.get", [tx_hash, True])
+    if not isinstance(tx, dict):
+        return None, height
+    return _extract_value_from_transaction(name, tx), height
+
+
+async def status(cfg: Optional[NamecoinConfig] = None) -> dict:
+    """Return a JSON-serialisable health summary of the Namecoin resolver.
+
+    Probes each configured server in parallel (with the same cert probe
+    and protocol handshake used by :func:`test_server`) and reports
+    current cache/circuit-breaker state.
+    """
+    cfg = cfg or _default_config()
+    tasks = [test_server(s, cfg, test_name="d/testls") for s in cfg.electrumx_servers]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    servers_out: List[dict] = []
+    for server, res in zip(cfg.electrumx_servers, results):
+        if isinstance(res, Exception):
+            servers_out.append({
+                "server": server.describe(),
+                "success": False,
+                "error": repr(res),
+            })
+            continue
+        entry = res.to_json()
+        st = _server_state(server)
+        now = time.monotonic()
+        entry["consecutive_errors"] = st.consecutive_errors
+        entry["in_cooldown"] = st.cooldown_until > now
+        if entry["in_cooldown"]:
+            entry["cooldown_remaining_s"] = round(st.cooldown_until - now, 1)
+        servers_out.append(entry)
+
+    return {
+        "enabled": cfg.enabled,
+        "rpc_configured": bool(cfg.rpc_url),
+        "electrumx_servers": servers_out,
+        "socks5_proxy": bool(cfg.socks5_proxy),
+        "pinned_certs": len(_PINNED_ELECTRUMX_CERTS) + len(cfg.extra_pinned_certs),
+        "cache": {
+            "entries": len(_resolver_cache._data),
+            "max_entries": cfg.cache_max_entries,
+            "ttl_seconds": cfg.cache_ttl,
+        },
+    }

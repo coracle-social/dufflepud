@@ -84,6 +84,56 @@ async def link_alert():
     return await _get_media_alert(url) or {}
 
 
+# ── Namecoin admin endpoints (token-gated) ───────────────────────────
+#
+# These are disabled unless `NAMECOIN_ADMIN_TOKEN` is set. Requests must
+# present the same value in the `X-Admin-Token` header. Two endpoints:
+#
+#   GET  /namecoin/status
+#        Health summary of configured backends: per-server connectivity,
+#        TLS version + pinned leaf cert, circuit-breaker state, cache
+#        stats. Useful for monitoring and operator debugging.
+#
+#   POST /namecoin/test-server    body: {"server": "<url>"}
+#        Probe an unconfigured server and return its cert (PEM + SHA-256).
+#        Intended for TOFU-style pinning: operators paste the returned
+#        PEM into NAMECOIN_ELECTRUMX_PINS after verifying the
+#        fingerprint out-of-band.
+
+
+def _require_admin():
+    expected = env('NAMECOIN_ADMIN_TOKEN') or ''
+    if not expected:
+        return ('Namecoin admin endpoints are disabled '
+                '(set NAMECOIN_ADMIN_TOKEN to enable)'), 404
+    got = request.headers.get('X-Admin-Token', '')
+    if got != expected:
+        return 'unauthorized', 401
+    return None
+
+
+@app.route('/namecoin/status', methods=['GET'])
+async def namecoin_status():
+    err_resp = _require_admin()
+    if err_resp is not None:
+        return err_resp
+    return await _namecoin.status()
+
+
+@app.route('/namecoin/test-server', methods=['POST'])
+async def namecoin_test_server():
+    err_resp = _require_admin()
+    if err_resp is not None:
+        return err_resp
+    url = get_json('server')
+    try:
+        server = _namecoin.ElectrumxServer.parse(url)
+    except ValueError as exc:
+        return {'error': f'invalid server url: {exc}'}, 400
+    result = await _namecoin.test_server(server)
+    return result.to_json()
+
+
 # Utils
 
 

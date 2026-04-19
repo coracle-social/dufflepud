@@ -72,6 +72,47 @@ Name resolution uses the standard Electrum scripthash protocol
 (`blockchain.scripthash.get_history` + `blockchain.transaction.get`), so any
 Namecoin-indexed ElectrumX server works &mdash; no special RPC methods required.
 
+### Tor / onion support
+
+For egress anonymity, set `NAMECOIN_SOCKS5_PROXY` (e.g.
+`socks5://127.0.0.1:9050`) and use the `tor` server-list token to prefer
+the onion server with clearnet fallback:
+
+```
+NAMECOIN_SOCKS5_PROXY=socks5://127.0.0.1:9050
+NAMECOIN_ELECTRUMX_SERVERS=tor
+```
+
+The SOCKS5 client is implemented in-process (stdlib only) and resolves
+destinations at the proxy, so `.onion` addresses and DNS leak prevention
+both work out of the box. `NAMECOIN_SOCKS5_PROXY` falls back to
+`ALL_PROXY` when unset. SOCKS5 currently applies to `tcp+tls` servers
+only; WSS endpoints require an HTTP CONNECT proxy.
+
+### Admin endpoints
+
+Two operator endpoints are available when `NAMECOIN_ADMIN_TOKEN` is set.
+Requests must present the same value in `X-Admin-Token`.
+
+**`GET /namecoin/status`** &mdash; health summary of each configured
+ElectrumX server: connectivity, TLS version, captured leaf cert (PEM
++ SHA-256), per-server circuit-breaker state, cache stats. Useful for
+monitoring and operator debugging.
+
+**`POST /namecoin/test-server`** &mdash; body `{"server": "tcp+tls://host:50002"}`.
+Probes an unconfigured server and returns its cert (PEM + SHA-256
+fingerprint) so the operator can paste into `NAMECOIN_ELECTRUMX_PINS`
+after verifying the fingerprint out-of-band. Implements the server-
+side equivalent of Amethyst's TOFU flow.
+
+### Resilience
+
+A lightweight per-server circuit breaker puts a server into cooldown
+after `NAMECOIN_SERVER_ERROR_THRESHOLD` consecutive errors (default 3),
+for `NAMECOIN_SERVER_COOLDOWN` seconds (default 60). Cooldown is reset
+by any successful response or definitive blockchain answer (e.g.
+`NameNotFound`). Set the threshold to 0 to disable the circuit breaker.
+
 ### Tuning
 
 All optional, with defaults shown:
@@ -82,11 +123,27 @@ NAMECOIN_READ_TIMEOUT=15        # seconds
 NAMECOIN_LOOKUP_TIMEOUT=20      # total per resolve, across retries
 NAMECOIN_CACHE_TTL=3600         # in-process resolver cache TTL
 NAMECOIN_CACHE_MAX_ENTRIES=500  # in-process resolver cache size
+NAMECOIN_SERVER_ERROR_THRESHOLD=3
+NAMECOIN_SERVER_COOLDOWN=60
 ```
 
 The in-process cache is separate from (and complements) Dufflepud's existing
 Redis `handle:` cache: it short-circuits repeat lookups for the _same_
 identifier within a process, including during the Redis cache miss window.
+
+### Tests
+
+Stdlib-only smoke tests (no new deps) cover every offline code path:
+
+```
+python -m unittest tests.test_namecoin
+```
+
+60 tests covering identifier parsing, value extraction for every
+on-chain layout, script codec round-trips, env-var config, cache
+semantics, and circuit-breaker state. Live-blockchain validation is
+deliberately out-of-band because it requires network access to
+namecoind or a public ElectrumX server.
 
 On-chain record format (stored in the `value` of `d/<label>`):
 
