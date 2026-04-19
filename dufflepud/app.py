@@ -189,49 +189,26 @@ async def _get_handle_info(handle):
     # Namecoin NIP-05: `.bit` domains are resolved from the Namecoin blockchain
     # instead of a DNS-backed HTTPS server. See NIP-05 + d/<name> convention.
     if domain.lower().endswith('.bit'):
-        res = await _namecoin.resolve_bit_domain(
-            domain,
-            rpc_url=env('NAMECOIN_RPC_URL') or None,
-            electrumx_servers=_parse_electrumx_servers(),
-        )
-    else:
-        res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
+        result = await _namecoin.resolve_identifier(handle)
+        if result is None:
+            return None
+        return {
+            'pubkey': result.pubkey,
+            'relays': list(result.relays) or None,
+            'nip46': list(result.nip46) or None,
+        }
 
+    res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
     if not res:
         return None
-
     pubkey = res.get('names', {}).get(name)
-
     if not pubkey:
         return None
-
     return {
         'pubkey': pubkey,
         'relays': res.get('relays', {}).get(pubkey),
         'nip46': res.get('nip46', {}).get(pubkey),
     }
-
-
-@functools.lru_cache(maxsize=1)
-def _parse_electrumx_servers():
-    """Parse NAMECOIN_ELECTRUMX_SERVERS once per process.
-
-    Values:
-      * unset or empty  -> ElectrumX path disabled
-      * literal 'default' -> use the built-in public server list
-      * comma-separated list of urls like `tcp+tls://host:port` or
-        `wss://host:port`; bare `host:port` is treated as `tcp+tls`.
-    """
-    spec = (env('NAMECOIN_ELECTRUMX_SERVERS') or '').strip()
-    if not spec:
-        return []
-    if spec.lower() == 'default':
-        return list(_namecoin.DEFAULT_ELECTRUMX_SERVERS)
-    try:
-        return _namecoin.parse_servers(spec)
-    except ValueError as exc:
-        logger.warning('Invalid NAMECOIN_ELECTRUMX_SERVERS: %s', exc)
-        return []
 
 
 @redis_cache('zapper')

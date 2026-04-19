@@ -16,16 +16,21 @@ Next, fill out the environment file by running `cp env.template env.local` and a
 
 Finally, enter `poetry run ./start` to start the server.
 
-## Namecoin NIP-05 (`.bit` handles) &mdash; opt-in
+## Namecoin NIP-05 &mdash; opt-in
 
 Dufflepud's `/handle/info` endpoint can transparently resolve NIP-05 handles
-whose domain ends in `.bit` from the [Namecoin](https://www.namecoin.org/)
-blockchain instead of HTTPS. Users then get handles like `alice@alice.bit` or
-`m@testls.bit` that are resolved via Namecoin's `d/<label>` namespace
-convention, with no DNS or registrar in the trust path.
+rooted in the [Namecoin](https://www.namecoin.org/) blockchain instead of
+HTTPS. No DNS or registrar in the trust path.
+
+Supported identifier forms (all routed to Namecoin when detected):
+
+- `alice@example.bit` &mdash; standard NIP-05 `<name>@<domain>.bit`
+- `example.bit` &mdash; bare domain (resolves the `_` root name)
+- `d/example` &mdash; direct Namecoin `d/` namespace reference
+- `id/alice` &mdash; Namecoin `id/` namespace (identity-first records)
 
 Two resolution backends are supported. Configuring either one enables the
-feature; when both are unset, `.bit` handles simply fail to resolve (same
+feature; when both are unset, Namecoin identifiers fail to resolve (same
 observable behavior as an unreachable DNS host). When both are set, RPC is
 tried first and ElectrumX is the fallback. Regular DNS-based NIP-05 is
 unaffected either way.
@@ -47,20 +52,41 @@ Schemes:
 - `tcp://host:port` &mdash; plaintext (discouraged)
 
 A bare `host:port` is treated as `tcp+tls`. Use the literal value `default`
-to enable the built-in list of well-known public Namecoin ElectrumX servers:
+to expand to the built-in list of well-known public Namecoin ElectrumX
+servers; it may be mixed with explicit URLs:
 
 ```
 NAMECOIN_ELECTRUMX_SERVERS=default
-# or specify your own:
 NAMECOIN_ELECTRUMX_SERVERS=tcp+tls://electrumx.testls.space:50002,wss://my-host.example:50004
+NAMECOIN_ELECTRUMX_SERVERS=default,tcp+tls://my-private.example:50002
 ```
 
 Dufflepud ships pinned self-signed certificates for the public servers
 (same pin set as [Amethyst](https://github.com/vitorpamplona/amethyst)),
 so TLS succeeds without requiring operators to manage a custom trust store.
+For private servers with self-signed certs, provide the PEM-encoded
+certificate(s) via `NAMECOIN_ELECTRUMX_PINS` (literal newlines or `\n`
+escapes between certs).
+
 Name resolution uses the standard Electrum scripthash protocol
 (`blockchain.scripthash.get_history` + `blockchain.transaction.get`), so any
 Namecoin-indexed ElectrumX server works &mdash; no special RPC methods required.
+
+### Tuning
+
+All optional, with defaults shown:
+
+```
+NAMECOIN_CONNECT_TIMEOUT=10     # seconds
+NAMECOIN_READ_TIMEOUT=15        # seconds
+NAMECOIN_LOOKUP_TIMEOUT=20      # total per resolve, across retries
+NAMECOIN_CACHE_TTL=3600         # in-process resolver cache TTL
+NAMECOIN_CACHE_MAX_ENTRIES=500  # in-process resolver cache size
+```
+
+The in-process cache is separate from (and complements) Dufflepud's existing
+Redis `handle:` cache: it short-circuits repeat lookups for the _same_
+identifier within a process, including during the Redis cache miss window.
 
 On-chain record format (stored in the `value` of `d/<label>`):
 
