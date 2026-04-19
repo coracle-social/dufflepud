@@ -24,18 +24,13 @@ blockchain instead of HTTPS. Users then get handles like `alice@alice.bit` or
 `m@testls.bit` that are resolved via Namecoin's `d/<label>` namespace
 convention, with no DNS or registrar in the trust path.
 
-This is **opt-in**: until one of the two env vars below is set, `.bit` handles
-simply fail to resolve (the same observable behavior as an unreachable DNS
-host). Regular DNS-based NIP-05 is unaffected either way.
+This is **opt-in**: until `NAMECOIN_RPC_URL` is set, `.bit` handles simply
+fail to resolve (the same observable behavior as an unreachable DNS host).
+Regular DNS-based NIP-05 is unaffected either way.
 
-Backends (in priority order):
-
-1. **`NAMECOIN_RPC_URL`** &mdash; a [namecoind](https://www.namecoin.org/) JSON-RPC
-   endpoint, e.g. `http://user:pass@127.0.0.1:8336`. Trustless: you validate
-   the blockchain yourself. Recommended for production deployments.
-2. **`NAMECOIN_HTTP_GATEWAY`** &mdash; any HTTPS gateway that exposes a
-   `name_show`-compatible JSON object at `GET /<name>`. Useful when running
-   namecoind isn't an option but you're willing to trust a third-party node.
+Set `NAMECOIN_RPC_URL` to a [namecoind](https://www.namecoin.org/) JSON-RPC
+endpoint, e.g. `http://user:pass@127.0.0.1:8336`. Dufflepud calls `name_show`
+directly, so resolution is trustless against the blockchain you're syncing.
 
 On-chain record format (stored in the `value` of `d/<label>`):
 
