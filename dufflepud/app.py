@@ -1,4 +1,6 @@
 import requests, functools, re, logging, json, mimetypes, os, redis, asyncio, aiohttp
+
+from . import namecoin as _namecoin
 from datetime import datetime, timezone
 from urllib3.exceptions import LocationParseError
 from requests.exceptions import (
@@ -187,7 +189,11 @@ async def _get_handle_info(handle):
     # Namecoin NIP-05: `.bit` domains are resolved from the Namecoin blockchain
     # instead of a DNS-backed HTTPS server. See NIP-05 + d/<name> convention.
     if domain.lower().endswith('.bit'):
-        res = await _get_namecoin_nostr_record(domain)
+        res = await _namecoin.resolve_bit_domain(
+            domain,
+            rpc_url=env('NAMECOIN_RPC_URL') or None,
+            electrumx_servers=_parse_electrumx_servers(),
+        )
     else:
         res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
 
@@ -206,85 +212,26 @@ async def _get_handle_info(handle):
     }
 
 
-async def _get_namecoin_nostr_record(domain):
-    """Resolve a .bit domain's NIP-05 record from the Namecoin blockchain.
+@functools.lru_cache(maxsize=1)
+def _parse_electrumx_servers():
+    """Parse NAMECOIN_ELECTRUMX_SERVERS once per process.
 
-    Returns a dict shaped like a standard `/.well-known/nostr.json` payload
-    (i.e. `{names, relays, nip46}`) so callers can treat the two resolution
-    paths uniformly.
-
-    Resolution requires `NAMECOIN_RPC_URL` to point at a namecoind JSON-RPC
-    endpoint. If unset, `.bit` handles fail to resolve (see
-    `_namecoin_name_show`).
-
-    Name records follow the d/<label> convention, e.g. `alice.bit` ->
-    `d/alice`. The `value` is parsed as JSON; the nostr record can live
-    under either `value.nostr` (Namecoin dNS/NIP-05 convention) or the
-    whole value may itself be a NIP-05 `{names, relays, nip46}` object.
+    Values:
+      * unset or empty  -> ElectrumX path disabled
+      * literal 'default' -> use the built-in public server list
+      * comma-separated list of urls like `tcp+tls://host:port` or
+        `wss://host:port`; bare `host:port` is treated as `tcp+tls`.
     """
-    label = domain[:-4].lower()  # strip '.bit'
-    if not label or '/' in label or '\0' in label:
-        return None
-
-    name_show = await _namecoin_name_show(f'd/{label}')
-    if not name_show:
-        return None
-
-    raw_value = name_show.get('value')
-    if not raw_value:
-        return None
-
+    spec = (env('NAMECOIN_ELECTRUMX_SERVERS') or '').strip()
+    if not spec:
+        return []
+    if spec.lower() == 'default':
+        return list(_namecoin.DEFAULT_ELECTRUMX_SERVERS)
     try:
-        value = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
-    except (ValueError, TypeError):
-        return None
-
-    if not isinstance(value, dict):
-        return None
-
-    # Preferred layout: value.nostr = { names, relays, nip46 }
-    nostr = value.get('nostr')
-    if isinstance(nostr, dict) and 'names' in nostr:
-        return nostr
-
-    # Fallback: value itself is the NIP-05 record
-    if 'names' in value:
-        return value
-
-    return None
-
-
-async def _namecoin_name_show(name):
-    """Call Namecoin `name_show` via JSON-RPC.
-
-    Returns `None` when `NAMECOIN_RPC_URL` is unset (opt-in behavior), which
-    causes `.bit` handles to resolve to `None` just like an unreachable DNS
-    NIP-05 host would. Regular DNS-based NIP-05 is unaffected.
-    """
-    rpc_url = env('NAMECOIN_RPC_URL')
-    if not rpc_url:
-        # Namecoin resolution is opt-in; without config, `.bit` handles
-        # simply fail to resolve (same observable behavior as an unreachable
-        # host).
-        return None
-
-    payload = {
-        'jsonrpc': '1.0',
-        'id': 'dufflepud',
-        'method': 'name_show',
-        'params': [name],
-    }
-    res = await req_json_async(
-        'post', rpc_url,
-        json=payload,
-        headers={'Content-Type': 'application/json'},
-    )
-    if not res:
-        return None
-    # JSON-RPC error or missing result -> treat as unresolved
-    if res.get('error'):
-        return None
-    return res.get('result')
+        return _namecoin.parse_servers(spec)
+    except ValueError as exc:
+        logger.warning('Invalid NAMECOIN_ELECTRUMX_SERVERS: %s', exc)
+        return []
 
 
 @redis_cache('zapper')
