@@ -184,7 +184,12 @@ async def _get_handle_info(handle):
     name = parts[0] if len(parts) > 1 else '_'
     domain = parts[-1]
 
-    res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
+    # Namecoin NIP-05: `.bit` domains are resolved from the Namecoin blockchain
+    # instead of a DNS-backed HTTPS server. See NIP-05 + d/<name> convention.
+    if domain.lower().endswith('.bit'):
+        res = await _get_namecoin_nostr_record(domain)
+    else:
+        res = await req_json_async('get', f'https://{domain}/.well-known/nostr.json?name={name}')
 
     if not res:
         return None
@@ -199,6 +204,94 @@ async def _get_handle_info(handle):
         'relays': res.get('relays', {}).get(pubkey),
         'nip46': res.get('nip46', {}).get(pubkey),
     }
+
+
+async def _get_namecoin_nostr_record(domain):
+    """Resolve a .bit domain's NIP-05 record from the Namecoin blockchain.
+
+    Returns a dict shaped like a standard `/.well-known/nostr.json` payload
+    (i.e. `{names, relays, nip46}`) so callers can treat the two resolution
+    paths uniformly.
+
+    Resolution strategy (opt-in; see `_namecoin_name_show`):
+      1. If NAMECOIN_RPC_URL is set, query namecoind's JSON-RPC `name_show`
+         directly (trustless, recommended for production).
+      2. Else if NAMECOIN_HTTP_GATEWAY is set, fetch `<gateway>/<name>`
+         which is expected to return a `name_show`-compatible JSON object.
+      3. If neither is configured, `.bit` handles fail to resolve.
+
+    Name records follow the d/<label> convention, e.g. `alice.bit` ->
+    `d/alice`. The `value` is parsed as JSON; the nostr record can live
+    under either `value.nostr` (Namecoin dNS/NIP-05 convention) or the
+    whole value may itself be a NIP-05 `{names, relays, nip46}` object.
+    """
+    label = domain[:-4].lower()  # strip '.bit'
+    if not label or '/' in label or '\0' in label:
+        return None
+
+    name_show = await _namecoin_name_show(f'd/{label}')
+    if not name_show:
+        return None
+
+    raw_value = name_show.get('value')
+    if not raw_value:
+        return None
+
+    try:
+        value = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+    except (ValueError, TypeError):
+        return None
+
+    if not isinstance(value, dict):
+        return None
+
+    # Preferred layout: value.nostr = { names, relays, nip46 }
+    nostr = value.get('nostr')
+    if isinstance(nostr, dict) and 'names' in nostr:
+        return nostr
+
+    # Fallback: value itself is the NIP-05 record
+    if 'names' in value:
+        return value
+
+    return None
+
+
+async def _namecoin_name_show(name):
+    """Call Namecoin `name_show` via either JSON-RPC or an HTTPS gateway.
+
+    Returns `None` if neither backend is configured (opt-in behavior), which
+    causes `.bit` handles to resolve to `None` just like an unreachable DNS
+    NIP-05 host would. Regular DNS-based NIP-05 is unaffected.
+    """
+    rpc_url = env('NAMECOIN_RPC_URL')
+    if rpc_url:
+        payload = {
+            'jsonrpc': '1.0',
+            'id': 'dufflepud',
+            'method': 'name_show',
+            'params': [name],
+        }
+        res = await req_json_async(
+            'post', rpc_url,
+            json=payload,
+            headers={'Content-Type': 'application/json'},
+        )
+        if not res:
+            return None
+        # JSON-RPC error or missing result -> treat as unresolved
+        if res.get('error'):
+            return None
+        return res.get('result')
+
+    gateway = env('NAMECOIN_HTTP_GATEWAY')
+    if gateway:
+        gateway = gateway.rstrip('/')
+        return await req_json_async('get', f'{gateway}/{name}')
+
+    # Namecoin resolution is opt-in; without config, `.bit` handles simply
+    # fail to resolve (same observable behavior as an unreachable host).
+    return None
 
 
 @redis_cache('zapper')
