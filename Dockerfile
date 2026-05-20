@@ -1,11 +1,16 @@
-FROM python:3.11-slim as builder
-WORKDIR /app
-RUN apt update && \
-    apt install -y --no-install-recommends curl libpq-dev build-essential && \
-    rm -rf /var/apt/lists.d/*
-RUN curl -sSL https://install.python-poetry.org | python3 -
-ENV PATH="$PATH:/root/.local/bin"
-COPY . .
-RUN poetry install
+FROM ghcr.io/astral-sh/uv:python3.11-bookworm-slim
 
-CMD poetry run ./start
+WORKDIR /app
+
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy
+
+# Install dependencies in their own layer so they're cached across code changes.
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+COPY . .
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+CMD ["./start"]

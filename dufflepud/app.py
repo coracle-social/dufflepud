@@ -1,16 +1,30 @@
-import requests, functools, re, logging, json, mimetypes, os, redis, asyncio, aiohttp
+import requests, functools, re, logging, json, mimetypes, os, redis, asyncio, aiohttp, base64, hashlib
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from urllib3.exceptions import LocationParseError
 from requests.exceptions import (
     ConnectionError, JSONDecodeError, ReadTimeout, InvalidSchema, MissingSchema,
     InvalidURL, TooManyRedirects)
 from raddoo import env, slurp, random_uuid, identity, merge
-from flask import Flask, request
+from flask import Flask, request, Response
 from flask_cors import CORS
-from werkzeug.exceptions import BadRequest
+from werkzeug.exceptions import BadRequest, Unauthorized
+from coincurve import PublicKeyXOnly
 
 MAX_CONTENT_LENGTH = env('MAX_CONTENT_LENGTH')
 REDIS_URL = env('REDIS_URL')
+
+# Base url of this dufflepud instance, e.g. https://dufflepud.example.com.
+# NIP 98 auth events must carry a matching `u` tag.
+BASE_URL = env('BASE_URL')
+
+# How long a NIP 98 auth event stays valid after it was signed. Standard NIP 98
+# uses a ~60s window; we widen it to 24 hours so a single signed token can
+# authenticate many requests, sparing the user repeated signing prompts.
+NIP98_TTL = 24 * 60 * 60
+
+# How long a stored kv value lives before redis expires it.
+KV_TTL = 7 * 24 * 60 * 60
 
 redis_client = redis.from_url(REDIS_URL)
 
@@ -82,6 +96,27 @@ async def link_alert():
     return await _get_media_alert(url) or {}
 
 
+@app.route('/kv/<key>', methods=['GET'])
+def kv_get(key):
+    pubkey = verify_nip98()
+
+    value = redis_client.get(_kv_key(pubkey, key))
+
+    if value is None:
+        return err('not-found', "No value is stored for that key")
+
+    return Response(value, mimetype='text/plain')
+
+
+@app.route('/kv/<key>', methods=['POST'])
+def kv_set(key):
+    pubkey = verify_nip98()
+
+    redis_client.setex(_kv_key(pubkey, key), KV_TTL, request.get_data())
+
+    return Response(status=204)
+
+
 # Utils
 
 
@@ -112,6 +147,85 @@ def get_json(name, coerce=identity):
         return coerce(request.json[name])
     except (ValueError, KeyError):
         raise BadRequest(f"`{name}` is a required parameter")
+
+
+def _kv_key(pubkey, key):
+    return f"kv:{pubkey}:{key}"
+
+
+def _nostr_event_id(event):
+    # NIP-01 id: sha256 of the compact, no-whitespace serialization of
+    # [0, pubkey, created_at, kind, tags, content].
+    serialized = json.dumps(
+        [0, event['pubkey'], event['created_at'], event['kind'], event['tags'], event['content']],
+        separators=(',', ':'),
+        ensure_ascii=False,
+    )
+
+    return hashlib.sha256(serialized.encode('utf-8')).hexdigest()
+
+
+def _last_tag_value(tags, name):
+    value = None
+
+    for tag in tags:
+        if len(tag) >= 2 and tag[0] == name:
+            value = tag[1]
+
+    return value
+
+
+def _check_u_tag(tags):
+    if not BASE_URL:
+        return
+
+    u = _last_tag_value(tags, 'u')
+
+    if u is None:
+        raise Unauthorized("nip98 event is missing a `u` tag")
+
+    want = urlparse(BASE_URL)
+    got = urlparse(u)
+
+    if (got.scheme.lower(), got.netloc.lower()) != (want.scheme.lower(), want.netloc.lower()):
+        raise Unauthorized("nip98 `u` tag does not match this server")
+
+
+def verify_nip98():
+    auth = request.headers.get('Authorization', '')
+
+    if not auth.startswith('Nostr '):
+        raise Unauthorized("Authorization header must use the Nostr scheme")
+
+    try:
+        event = json.loads(base64.b64decode(auth[len('Nostr '):].strip()))
+        pubkey, eid, sig = event['pubkey'], event['id'], event['sig']
+        kind, created_at, tags = event['kind'], int(event['created_at']), event['tags']
+    except Exception:
+        raise Unauthorized("malformed nip98 authorization event")
+
+    if kind != 27235:
+        raise Unauthorized("invalid nip98 event kind")
+
+    # We deliberately do not validate the `method` tag.
+
+    if abs(int(now().timestamp()) - created_at) > NIP98_TTL:
+        raise Unauthorized("nip98 event has expired")
+
+    if _nostr_event_id(event) != eid:
+        raise Unauthorized("nip98 event id does not match its contents")
+
+    try:
+        valid = PublicKeyXOnly(bytes.fromhex(pubkey)).verify(bytes.fromhex(sig), bytes.fromhex(eid))
+    except Exception:
+        valid = False
+
+    if not valid:
+        raise Unauthorized("invalid nip98 event signature")
+
+    _check_u_tag(tags)
+
+    return pubkey
 
 
 def req(*args, **kwargs):

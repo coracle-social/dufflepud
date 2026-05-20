@@ -1,23 +1,25 @@
-[tool.poetry]
+[project]
 name = "dufflepud"
 version = "0.1.0"
 description = "A media server for the coracle nostr client"
-authors = ["Your Name <you@example.com>"]
+authors = [{ name = "Your Name", email = "you@example.com" }]
 license = "MIT"
 readme = "README.md"
+requires-python = ">=3.10,<4.0"
+dependencies = [
+    "raddoo>=0.0.18",
+    "flask[async]>=3.0.3,<4",
+    "gunicorn>=23.0.0,<24",
+    "flask-cors>=3.0.10,<4",
+    "toml>=0.10.2,<0.11",
+    "requests>=2.28.2,<3",
+    "redis>=5.0.8,<6",
+    "aiohttp>=3.10.5,<4",
+    "gevent>=24.2.1,<25",
+    "coincurve>=21.0.0,<22",
+]
 
-[tool.poetry.dependencies]
-python = "^3.10"
-raddoo = "^0.0.18"
-flask = {extras = ["async"], version = "^3.0.3"}
-gunicorn = "^20.1.0"
-flask-cors = "^3.0.10"
-toml = "^0.10.2"
-requests = "^2.28.2"
-redis = "^5.0.8"
-aiohttp = "^3.10.5"
-gevent = "^24.2.1"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+[tool.uv]
+# The app is run via gunicorn against the dufflepud package on sys.path, not
+# installed as a distributable; only its dependencies need to be synced.
+package = false

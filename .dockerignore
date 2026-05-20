@@ -1,0 +1,13 @@
+# The venv is built inside the image by `uv sync`; copying the host's would
+# clobber it with binaries/shebangs that don't exist in the container.
+.venv
+
+.git
+.gitignore
+.dockerignore
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+env.local
+node_modules
