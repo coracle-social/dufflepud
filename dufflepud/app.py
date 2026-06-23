@@ -40,6 +40,27 @@ cors = CORS(app, resource={
     }
 })
 
+# Web crawlers and link-preview scrapers (e.g. Facebook's meta-externalagent,
+# hitting /media/alert via shared coracle.social links) generate load without
+# corresponding to a real client. Turn away anything whose User-Agent
+# self-identifies as a bot. Matches the common crawler tokens plus a handful of
+# named scrapers that don't include "bot" in their UA.
+BOT_UA_RE = re.compile(
+    r'bot|crawl|spider|slurp|mediapartners|meta-externalagent|'
+    r'facebookexternalhit|embedly|bingpreview|skypeuripreview|'
+    r'whatsapp|telegram|discord|scrape|monitor|archive\.org',
+    re.IGNORECASE)
+
+
+@app.before_request
+def block_bots():
+    ua = request.headers.get('User-Agent', '')
+
+    if BOT_UA_RE.search(ua):
+        # 410 Gone signals well-behaved crawlers to stop re-crawling the URL.
+        return Response("Bots are not welcome here\n", status=410, mimetype='text/plain')
+
+
 @app.route('/relay', methods=['GET'])
 def relay_list():
     try:
