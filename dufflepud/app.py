@@ -26,6 +26,21 @@ NIP98_TTL = 24 * 60 * 60
 # How long a stored kv value lives before redis expires it.
 KV_TTL = 7 * 24 * 60 * 60
 
+# CARTO issues a basemap key per referer and bills every tile against it, so a
+# client asks us for a tile and we add the key. The key has to authorize
+# BASE_URL, which is the only referer CARTO ever sees.
+CARTO_BASEMAP_KEY = env('CARTO_BASEMAP_KEY')
+
+# The raster styles CARTO serves. Anything else is refused rather than forwarded.
+CARTO_BASEMAP_STYLES = {
+    'light_all', 'light_nolabels', 'light_only_labels',
+    'dark_all', 'dark_nolabels', 'dark_only_labels',
+    'voyager', 'voyager_nolabels', 'voyager_only_labels',
+}
+
+# A tile is immutable for as long as anyone cares, so let the browser keep it.
+TILE_TTL = 7 * 24 * 60 * 60
+
 redis_client = redis.from_url(REDIS_URL)
 
 app = Flask(__name__)
@@ -136,6 +151,29 @@ def kv_set(key):
     redis_client.setex(_kv_key(pubkey, key), KV_TTL, request.get_data())
 
     return Response(status=204)
+
+
+@app.route('/basemap/<style>/<int:z>/<int:x>/<int:y>.png', methods=['GET'])
+def basemap_tile(style, z, x, y):
+    if style not in CARTO_BASEMAP_STYLES:
+        return err('not-found', "No such basemap style")
+
+    if z > 20 or x >= 2 ** z or y >= 2 ** z:
+        return err('not-found', "No such tile")
+
+    res = req(
+        'get',
+        f'https://basemaps.cartocdn.com/rastertiles/{style}/{z}/{x}/{y}.png',
+        params={'key': CARTO_BASEMAP_KEY},
+        headers={'Referer': BASE_URL} if BASE_URL else {},
+        timeout=10)
+
+    if res is None or res.status_code != 200:
+        return err('not-found', "The tile server did not answer with a tile")
+
+    return Response(res.content, mimetype='image/png', headers={
+        'Cache-Control': f'public, max-age={TILE_TTL}',
+    })
 
 
 # Utils
