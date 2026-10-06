@@ -69,6 +69,10 @@ BOT_UA_RE = re.compile(
 
 @app.before_request
 def block_bots():
+    # Uptime monitors often say "bot" or "monitor" in their User-Agent.
+    if request.path == '/health':
+        return
+
     ua = request.headers.get('User-Agent', '')
 
     if BOT_UA_RE.search(ua):
@@ -76,8 +80,15 @@ def block_bots():
         return Response("Bots are not welcome here\n", status=410, mimetype='text/plain')
 
 
+@app.route('/health', methods=['GET'])
+def health():
+    return Response("ok\n", mimetype='text/plain')
+
+
 @app.route('/relay', methods=['GET'])
 def relay_list():
+    result = None
+
     try:
         result = _get_relays()
     except Exception as exc:
@@ -340,7 +351,7 @@ def redis_cache(ns, expiration_time=300):
 
 @functools.lru_cache()
 def _get_relays():
-    return req_json('get', 'https://nostr.watch/relays.json')
+    return req_json('get', 'https://nostr.watch/relays.json', timeout=20)
 
 
 @redis_cache('relay')
